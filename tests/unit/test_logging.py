@@ -7,7 +7,12 @@ from typing import Iterator, TextIO
 
 import pytest
 
-from cbe_rag.observability.logging import get_logger, open_utf8_stream, setup_logging
+from cbe_rag.observability.logging import (
+    get_logger,
+    open_utf8_stream,
+    setup_console,
+    setup_logging,
+)
 
 
 class RecordingHandler(logging.Handler):
@@ -177,3 +182,64 @@ class TestUtf8Stream:
 
         assert captured["encoding"] == "utf-8"
         assert captured["errors"] == "replace"
+
+    def test_stderr_does_not_force_line_buffering(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 标准错误本就不缓冲，显式传 line_buffering=False 反而可能改坏它
+        captured: dict[str, object] = {}
+
+        class RecordingStream:
+            def reconfigure(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        monkeypatch.setattr("sys.stderr", RecordingStream())
+
+        open_utf8_stream()
+
+        assert "line_buffering" not in captured
+
+
+class TestSetupConsole:
+    """标准输出的配置。
+
+    解决两个问题：PyCharm 控制台与管道环境下中文乱码；
+    标准输出块缓冲导致与日志的显示顺序错乱。
+    """
+
+    def test_reconfigures_stdout_to_utf8_with_line_buffering(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class RecordingStream:
+            def reconfigure(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        monkeypatch.setattr("sys.stdout", RecordingStream())
+
+        setup_console()
+
+        assert captured["encoding"] == "utf-8"
+        assert captured["line_buffering"] is True
+
+    def test_stream_without_reconfigure_is_tolerated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class PlainStream:
+            pass
+
+        monkeypatch.setattr("sys.stdout", PlainStream())
+
+        setup_console()
+
+    def test_reconfigure_failure_does_not_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class BrokenStream:
+            def reconfigure(self, **kwargs: object) -> None:
+                raise ValueError("stream already detached")
+
+        monkeypatch.setattr("sys.stdout", BrokenStream())
+
+        setup_console()

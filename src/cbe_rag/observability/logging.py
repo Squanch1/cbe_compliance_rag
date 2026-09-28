@@ -28,24 +28,54 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
+def _reconfigure_utf8(stream: TextIO, *, line_buffering: bool = False) -> TextIO:
+    """把流改成 UTF-8 输出。
+
+    errors="replace" 是兜底：遇到编码不了的字符时替换而不是抛异常，
+    输出本身不应该成为程序崩溃的原因。
+
+    流不支持 reconfigure（已被替换成自定义对象）或已被分离时保持原样，
+    不阻断启动。
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return stream
+
+    kwargs: dict[str, object] = {"encoding": "utf-8", "errors": "replace"}
+    if line_buffering:
+        # 只在需要打开时传入，避免把本就开启行缓冲的流关掉
+        kwargs["line_buffering"] = True
+
+    try:
+        reconfigure(**kwargs)
+    except (ValueError, OSError):
+        pass
+    return stream
+
+
 def open_utf8_stream() -> TextIO:
     """返回一个能正确输出中文的标准错误流。
 
     Windows 上标准错误被重定向到管道时，Python 会退回本地编码
     （本机为 cp936），中文会变成乱码。这里显式改成 UTF-8。
-
-    errors="replace" 是兜底：遇到编码不了的字符时替换而不是抛异常，
-    日志本身不应该成为程序崩溃的原因。
     """
-    stream = sys.stderr
-    reconfigure = getattr(stream, "reconfigure", None)
-    if reconfigure is not None:
-        try:
-            reconfigure(encoding="utf-8", errors="replace")
-        except (ValueError, OSError):
-            # 流已被分离或已关闭等情况下保持原样，不阻断启动
-            pass
-    return stream
+    return _reconfigure_utf8(sys.stderr)
+
+
+def setup_console() -> None:
+    """配置标准输出。脚本入口调用一次。
+
+    解决两个问题：
+
+    编码——PyCharm 控制台与管道环境下标准输出用本地编码（本机 cp936），
+    print 出来的中文会乱码。日志不受影响，因为 setup_logging 已经把
+    标准错误改成 UTF-8 了。
+
+    缓冲——标准输出在非终端环境下是块缓冲，而标准错误不缓冲。两者混用时
+    显示顺序会与执行顺序不一致：报告明明先打印，却显示在日志后面。
+    改成行缓冲即可对齐。
+    """
+    _reconfigure_utf8(sys.stdout, line_buffering=True)
 
 
 def setup_logging(level: str | int = "INFO") -> None:

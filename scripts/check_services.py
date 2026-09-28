@@ -25,6 +25,7 @@ if str(_SRC_DIR) not in sys.path:
 from pydantic import ValidationError  # noqa: E402
 
 from cbe_rag.config.settings import Settings  # noqa: E402
+from cbe_rag.observability import setup_console  # noqa: E402
 from cbe_rag.storage import MilvusStore, MongoStore, MysqlStore, RedisStore  # noqa: E402
 from cbe_rag.storage.health import HealthResult, StorageAdapter  # noqa: E402
 
@@ -95,6 +96,9 @@ def report_config_error(exc: ValidationError) -> None:
 
 def main() -> int:
     """执行全部检查并返回退出码。"""
+    # 不改的话，PyCharm 控制台与管道环境下本脚本的中文报告会乱码
+    setup_console()
+
     print("=" * 64)
     print("服务连通性检查")
     print("=" * 64)

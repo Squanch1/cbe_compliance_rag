@@ -4,6 +4,11 @@
 （见 docs/spec/02-architecture.md 第 7 节）。
 """
 
-from cbe_rag.observability.logging import get_logger, setup_logging
+from cbe_rag.observability.logging import (
+    get_logger,
+    open_utf8_stream,
+    setup_console,
+    setup_logging,
+)
 
-__all__ = ["get_logger", "setup_logging"]
+__all__ = ["get_logger", "open_utf8_stream", "setup_console", "setup_logging"]
