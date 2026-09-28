@@ -154,14 +154,16 @@ pending  ──补齐必填元数据──>  ready  ──索引成功──>  i
 
 ```sql
 CREATE TABLE chunks (
-    chunk_id    CHAR(64)   NOT NULL COMMENT '父块 {doc_id}_pXXXX 或子块 {doc_id}_cXXXX',
-    doc_id      CHAR(36)   NOT NULL COMMENT '所属文档',
-    parent_id   CHAR(64)   NULL     COMMENT '父块标识，父块自身为空',
-    level       VARCHAR(8) NOT NULL COMMENT 'parent 或 child',
-    chunk_index INT        NOT NULL COMMENT '同级内的序号，从 0 开始',
-    text        MEDIUMTEXT NOT NULL COMMENT '块的正文',
-    token_count INT        NOT NULL COMMENT 'token 数，便于排查切分异常',
-    created_at  DATETIME   NOT NULL,
+    chunk_id     CHAR(64)   NOT NULL COMMENT '父块 {doc_id}_pXXXX 或子块 {doc_id}_cXXXX',
+    doc_id       CHAR(36)   NOT NULL COMMENT '所属文档',
+    parent_id    CHAR(64)   NULL     COMMENT '父块标识，父块自身为空',
+    level        VARCHAR(8) NOT NULL COMMENT 'parent 或 child',
+    chunk_index  INT        NOT NULL COMMENT '同级内的序号，从 0 开始',
+    text         MEDIUMTEXT NOT NULL COMMENT '块的正文',
+    token_count  INT        NOT NULL COMMENT 'token 数，便于排查切分异常',
+    start_offset INT        NULL     COMMENT '在父块正文中的起始字符位置，子块必填',
+    end_offset   INT        NULL     COMMENT '在父块正文中的结束字符位置，左闭右开，子块必填',
+    created_at   DATETIME   NOT NULL,
     PRIMARY KEY (chunk_id),
     KEY idx_chunks_doc (doc_id, level, chunk_index),
     KEY idx_chunks_parent (parent_id),
@@ -169,6 +171,12 @@ CREATE TABLE chunks (
         REFERENCES documents (doc_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='父子两级分块';
 ```
+
+**子块记录相对父块的字符偏移**，用于界面在父块全文中高亮命中的子块。
+
+不在渲染时用字符串查找代替偏移量：同一段文字在一个父块内可能重复出现（法条与政策文本尤其常见），查找会定位到错误的那一处。
+
+**入库时校验 `parent.text[start_offset:end_offset] == child.text`**，不满足即拒绝。这条保证「子块是父块的连续子串」（见 `02-architecture.md` 6.5），是「父块进提示词不丢信息」与「界面高亮定位」两个能力的前提。
 
 **取父块正文的查询**（在线链路第 5 步）：
 
