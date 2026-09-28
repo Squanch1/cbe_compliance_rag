@@ -124,7 +124,7 @@ CREATE TABLE documents (
     collected_date DATE          NOT NULL COMMENT '采集日期',
     status         VARCHAR(16)   NOT NULL COMMENT 'pending/ready/indexed/failed',
     missing_fields JSON          NULL     COMMENT '缺失的必填字段名清单',
-    raw_path       VARCHAR(1024) NOT NULL COMMENT '原始文件在 data/raw/ 下的相对路径',
+    raw_path       VARCHAR(1024) NOT NULL COMMENT '原始文件绝对路径，见 CLAUDE.md 5.2 路径约定',
     content_hash   CHAR(64)      NOT NULL COMMENT '原始文件 SHA-256，用于去重与变更检测',
     created_at     DATETIME      NOT NULL,
     updated_at     DATETIME      NOT NULL,
