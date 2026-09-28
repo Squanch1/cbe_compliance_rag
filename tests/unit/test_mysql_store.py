@@ -142,6 +142,23 @@ class TestHealthCheckSuccess:
         assert result.elapsed_ms >= 0.0
 
 
+class TestLifecycle:
+    def test_close_is_safe_to_call(self) -> None:
+        # 本适配器不持有长期资源，close 是空操作。
+        # 方法存在是为了满足 StorageAdapter 协议，让调用方统一遍历。
+        store = MysqlStore(make_config(), connect=FakeConnector())
+
+        store.close()
+
+    def test_close_does_not_affect_later_checks(self) -> None:
+        connector = FakeConnector()
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.close()
+
+        assert store.health_check().ok is True
+
+
 class TestHealthCheckFailure:
     def test_connection_failure_is_reported_not_raised(self) -> None:
         store = MysqlStore(

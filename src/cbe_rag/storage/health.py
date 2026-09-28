@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -26,3 +27,20 @@ class HealthResult:
         """渲染成一行可读文本，供连通性脚本输出。"""
         status = "OK  " if self.ok else "FAIL"
         return "[%s] %-8s %8.1fms  %s" % (status, self.service, self.elapsed_ms, self.detail)
+
+
+@runtime_checkable
+class StorageAdapter(Protocol):
+    """四个存储适配器共同遵守的接口。
+
+    调用方（连通性脚本、健康检查接口、FastAPI 生命周期钩子）
+    可以统一遍历所有适配器，不必区分具体类型或做 hasattr 判断。
+    """
+
+    def health_check(self) -> HealthResult:
+        """探测连通性。失败时返回 ok=False 的结果，不抛异常。"""
+        ...
+
+    def close(self) -> None:
+        """释放资源。不持有资源的实现可以为空操作，但必须存在且可安全调用。"""
+        ...

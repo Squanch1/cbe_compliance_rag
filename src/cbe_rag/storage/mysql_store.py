@@ -127,3 +127,11 @@ class MysqlStore:
             detail=detail,
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
         )
+
+    def close(self) -> None:
+        """空操作。
+
+        本适配器每次操作自行建立并关闭连接，不持有需要释放的资源。
+        方法存在是为了满足 StorageAdapter 协议，让调用方能统一遍历所有适配器。
+        """
+        return None

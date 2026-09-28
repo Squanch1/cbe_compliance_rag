@@ -41,6 +41,7 @@ class FakeRedis:
         self._version = version
         self._info_missing_version = info_missing_version
         self.ping_called = 0
+        self.closed = False
 
     def ping(self) -> bool:
         self.ping_called += 1
@@ -54,6 +55,9 @@ class FakeRedis:
         if self._info_missing_version:
             return {}
         return {"redis_version": self._version}
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class TestHealthCheckSuccess:
@@ -137,6 +141,25 @@ class TestHealthCheckFailure:
         result = store.health_check()
 
         assert config.password.get_secret_value() not in result.detail
+
+
+class TestLifecycle:
+    def test_health_check_does_not_close_the_client(self) -> None:
+        # redis-py 内部维护连接池，客户端应当长期复用
+        client = FakeRedis()
+        store = RedisStore(make_config(), client=client)
+
+        store.health_check()
+
+        assert client.closed is False
+
+    def test_close_releases_the_client(self) -> None:
+        client = FakeRedis()
+        store = RedisStore(make_config(), client=client)
+
+        store.close()
+
+        assert client.closed is True
 
 
 class TestHealthResultRendering:

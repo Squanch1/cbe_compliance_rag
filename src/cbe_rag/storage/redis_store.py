@@ -29,6 +29,10 @@ class RedisClient(Protocol):
         """返回服务信息。section 为 "server" 时含版本号。"""
         ...
 
+    def close(self) -> None:
+        """释放连接池。"""
+        ...
+
 
 class RedisStore:
     """Redis 访问入口。
@@ -79,3 +83,11 @@ class RedisStore:
             detail=detail,
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
         )
+
+    def close(self) -> None:
+        """释放客户端及其连接池。
+
+        redis-py 内部维护连接池，客户端应当长期复用，
+        因此不像 MySQL 适配器那样按次建立连接。
+        """
+        self._client.close()
