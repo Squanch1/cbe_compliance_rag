@@ -11,6 +11,15 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from cbe_rag.config.settings import (
+    ENV_EXAMPLE_PATH as SETTINGS_ENV_EXAMPLE,
+)
+from cbe_rag.config.settings import (
+    ENV_FILE_PATH as SETTINGS_ENV_FILE,
+)
+from cbe_rag.config.settings import (
+    PROJECT_ROOT as SETTINGS_PROJECT_ROOT,
+)
 from cbe_rag.config.settings import Settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -135,6 +144,38 @@ class TestSecretHandling:
 
         assert settings.redis.password.get_secret_value() == "fake-redis-password"
         assert settings.llm.api_key.get_secret_value() == "sk-fake-key"
+
+
+class TestEnvFileResolution:
+    """配置文件的定位。
+
+    回归：早期实现靠当前工作目录找 .env，在 PyCharm 里运行脚本时
+    工作目录不是项目根，于是 Settings() 报出一堆「字段缺失」，
+    而真正的原因是文件根本没找到。
+    """
+
+    def test_project_root_is_the_repository_root(self) -> None:
+        # 源码布局若变化导致向上级数算错，这条会失败
+        assert (SETTINGS_PROJECT_ROOT / "pyproject.toml").is_file()
+        assert (SETTINGS_PROJECT_ROOT / "src" / "cbe_rag").is_dir()
+
+    def test_env_file_path_is_absolute(self) -> None:
+        assert SETTINGS_ENV_FILE.is_absolute()
+
+    def test_env_file_sits_in_project_root(self) -> None:
+        assert SETTINGS_ENV_FILE.parent == SETTINGS_PROJECT_ROOT
+        assert SETTINGS_ENV_FILE.name == ".env"
+
+    def test_env_example_sits_next_to_env_file(self) -> None:
+        assert SETTINGS_ENV_EXAMPLE.parent == SETTINGS_ENV_FILE.parent
+        assert SETTINGS_ENV_EXAMPLE.name == ".env.example"
+
+    def test_default_env_file_does_not_depend_on_cwd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        assert Settings.model_config["env_file"] == SETTINGS_ENV_FILE
 
 
 class TestEnvExampleTemplate:

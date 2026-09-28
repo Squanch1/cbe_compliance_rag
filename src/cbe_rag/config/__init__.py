@@ -1,6 +1,9 @@
 """配置加载与校验。"""
 
 from cbe_rag.config.settings import (
+    ENV_EXAMPLE_PATH,
+    ENV_FILE_PATH,
+    PROJECT_ROOT,
     EmbeddingConfig,
     LlmConfig,
     MilvusConfig,
@@ -13,6 +16,9 @@ from cbe_rag.config.settings import (
 )
 
 __all__ = [
+    "ENV_EXAMPLE_PATH",
+    "ENV_FILE_PATH",
+    "PROJECT_ROOT",
     "EmbeddingConfig",
     "LlmConfig",
     "MilvusConfig",

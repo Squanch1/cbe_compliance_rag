@@ -21,12 +21,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
-ENV_FILE = PROJECT_ROOT / ".env"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from cbe_rag.config.settings import Settings  # noqa: E402
+from cbe_rag.config.settings import ENV_FILE_PATH, Settings  # noqa: E402
 from cbe_rag.observability import get_logger, setup_console, setup_logging  # noqa: E402
 from cbe_rag.storage import MilvusStore, MongoStore, MysqlStore, RedisStore  # noqa: E402
 from cbe_rag.storage.health import HealthResult, StorageAdapter  # noqa: E402
@@ -62,19 +61,19 @@ def show_config() -> Settings | None:
     """加载并打印配置。配置有问题时返回 None。"""
     section("1. 配置层 config/settings.py")
 
-    if not ENV_FILE.is_file():
-        print("  [FAIL] 找不到配置文件：%s" % ENV_FILE)
+    if not ENV_FILE_PATH.is_file():
+        print("  [FAIL] 找不到配置文件：%s" % ENV_FILE_PATH)
         print("         请复制 .env.example 为 .env 并填入真实凭据。")
         return None
 
     try:
-        settings = Settings(_env_file=ENV_FILE)
+        settings = Settings()
     except Exception as exc:
         print("  [FAIL] 配置加载失败：%s" % type(exc).__name__)
         print("         %s" % str(exc)[:400])
         return None
 
-    print("  [OK] 配置加载成功，来自 %s" % ENV_FILE.name)
+    print("  [OK] 配置加载成功，来自 %s" % ENV_FILE_PATH)
     print()
     print("  Milvus   : %s:%d  库=%s" % (
         settings.milvus.host, settings.milvus.port, settings.milvus.database))

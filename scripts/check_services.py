@@ -24,7 +24,7 @@ if str(_SRC_DIR) not in sys.path:
 
 from pydantic import ValidationError  # noqa: E402
 
-from cbe_rag.config.settings import Settings  # noqa: E402
+from cbe_rag.config.settings import ENV_EXAMPLE_PATH, ENV_FILE_PATH, Settings  # noqa: E402
 from cbe_rag.observability import setup_console  # noqa: E402
 from cbe_rag.storage import MilvusStore, MongoStore, MysqlStore, RedisStore  # noqa: E402
 from cbe_rag.storage.health import HealthResult, StorageAdapter  # noqa: E402
@@ -102,6 +102,15 @@ def main() -> int:
     print("=" * 64)
     print("服务连通性检查")
     print("=" * 64)
+
+    # 先单独判文件在不在。否则 Settings 会把「文件没找到」报成
+    # 一堆「字段缺失」，让人跑去检查 .env 的内容，而问题其实在路径上。
+    if not ENV_FILE_PATH.is_file():
+        print("[FAIL] 找不到配置文件：%s" % ENV_FILE_PATH)
+        print()
+        print("       请先复制配置模板并填入真实凭据：")
+        print("         copy %s %s" % (ENV_EXAMPLE_PATH.name, ENV_FILE_PATH.name))
+        return 1
 
     try:
         settings = Settings()

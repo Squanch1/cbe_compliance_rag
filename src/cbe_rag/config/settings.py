@@ -17,7 +17,17 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_DEFAULT_ENV_FILE = ".env"
+# 配置文件按本模块位置推算绝对路径，而不是靠当前工作目录。
+# 靠工作目录会在 IDE 里出问题：PyCharm 运行脚本时的工作目录不一定是项目根，
+# 于是 Settings() 找不到 .env，报出一堆「字段缺失」，而真正的原因是文件没找到。
+# 源码布局为 <项目根>/src/cbe_rag/config/settings.py，故向上四级即项目根。
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+# 配置模板与真实配置的位置，供脚本判断文件是否存在并给出准确提示
+ENV_EXAMPLE_PATH = PROJECT_ROOT / ".env.example"
+ENV_FILE_PATH = PROJECT_ROOT / ".env"
+
+_DEFAULT_ENV_FILE = ENV_FILE_PATH
 
 
 class _Section(BaseModel):
