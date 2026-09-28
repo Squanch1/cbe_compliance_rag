@@ -73,6 +73,11 @@ class MongodbConfig(_Section):
     user: str = Field(min_length=1)
     password: SecretStr
     database: str = Field(default="cbe_compliance", min_length=1)
+    auth_source: str = Field(
+        default="admin",
+        min_length=1,
+        description="认证库。账号建在 admin 库时保持默认，建在业务库时改为业务库名",
+    )
     timeout_seconds: float = Field(default=10.0, gt=0)
 
 

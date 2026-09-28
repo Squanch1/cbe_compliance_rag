@@ -69,6 +69,12 @@ class TestDefaults:
         assert settings.mongodb.port == 27017
         assert settings.mysql.port == 3306
 
+    def test_mongodb_auth_source_defaults_to_admin(self, env: pytest.MonkeyPatch) -> None:
+        # 账号默认建在 admin 库；若建在业务库需显式改这一项
+        settings = build_settings()
+
+        assert settings.mongodb.auth_source == "admin"
+
     def test_namespace_defaults(self, env: pytest.MonkeyPatch) -> None:
         settings = build_settings()
 
