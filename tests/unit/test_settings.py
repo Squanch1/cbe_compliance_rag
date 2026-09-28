@@ -20,7 +20,7 @@ from cbe_rag.config.settings import (
 from cbe_rag.config.settings import (
     PROJECT_ROOT as SETTINGS_PROJECT_ROOT,
 )
-from cbe_rag.config.settings import Settings
+from cbe_rag.config.settings import Settings, resolve_project_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_EXAMPLE_PATH = PROJECT_ROOT / ".env.example"
@@ -176,6 +176,68 @@ class TestEnvFileResolution:
         monkeypatch.chdir(tmp_path)
 
         assert Settings.model_config["env_file"] == SETTINGS_ENV_FILE
+
+
+class TestResolveProjectPath:
+    """路径解析函数本身。"""
+
+    def test_relative_path_resolves_against_project_root(self) -> None:
+        assert resolve_project_path("models/bge-m3") == SETTINGS_PROJECT_ROOT / "models" / "bge-m3"
+
+    def test_absolute_path_is_returned_unchanged(self, tmp_path: Path) -> None:
+        assert resolve_project_path(tmp_path / "model") == tmp_path / "model"
+
+    def test_dot_prefixed_relative_path(self) -> None:
+        assert resolve_project_path("./data/raw") == SETTINGS_PROJECT_ROOT / "data" / "raw"
+
+    def test_parent_traversal_is_resolved(self) -> None:
+        result = resolve_project_path("src/../models")
+
+        assert result == SETTINGS_PROJECT_ROOT / "models"
+        assert ".." not in str(result)
+
+
+class TestConfiguredPathsStayAbsolute:
+    """配置里的路径一律解析成绝对路径，且不随工作目录变化。
+
+    约定来源：相对路径按项目根解析。靠工作目录会在 IDE 里失效——
+    PyCharm 运行脚本时的工作目录不一定是项目根。
+    """
+
+    def test_default_model_path_is_absolute(self, env: pytest.MonkeyPatch) -> None:
+        assert build_settings().embedding.model_path.is_absolute()
+
+    def test_default_model_path_sits_in_project_root(
+        self, env: pytest.MonkeyPatch
+    ) -> None:
+        settings = build_settings()
+
+        assert settings.embedding.model_path == (
+            SETTINGS_PROJECT_ROOT / "models" / "bge-m3"
+        )
+
+    def test_relative_configured_path_ignores_cwd(
+        self, env: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # 回归：换到任意工作目录，解析结果必须一致
+        monkeypatch.chdir(tmp_path)
+        env.setenv("CBE_EMBEDDING__MODEL_PATH", "models/bge-m3")
+
+        settings = build_settings()
+
+        assert settings.embedding.model_path == (
+            SETTINGS_PROJECT_ROOT / "models" / "bge-m3"
+        )
+
+    def test_absolute_configured_path_is_kept(
+        self, env: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "custom" / "bge-m3"
+        env.setenv("CBE_EMBEDDING__MODEL_PATH", str(target))
+
+        settings = build_settings()
+
+        assert settings.embedding.model_path == target
 
 
 class TestEnvExampleTemplate:

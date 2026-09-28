@@ -14,7 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 配置文件按本模块位置推算绝对路径，而不是靠当前工作目录。
@@ -28,6 +28,25 @@ ENV_EXAMPLE_PATH = PROJECT_ROOT / ".env.example"
 ENV_FILE_PATH = PROJECT_ROOT / ".env"
 
 _DEFAULT_ENV_FILE = ENV_FILE_PATH
+
+
+def resolve_project_path(value: str | Path) -> Path:
+    """把配置里的路径统一解析成绝对路径。
+
+    相对路径一律相对项目根解析，**不是**相对当前工作目录。
+    靠工作目录会在 IDE 里出问题：PyCharm 运行脚本时的工作目录不一定
+    是项目根，路径随即失效，而报错往往指向「文件不存在」这种
+    看不出根因的信息。
+
+    这样才能在 .env 里写 models/bge-m3 这种简短写法，同时保证
+    在任何工作目录下运行结果一致。
+
+    绝对路径原样返回；~ 开头的路径会展开为用户目录。
+    """
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return (PROJECT_ROOT / path).resolve()
 
 
 class _Section(BaseModel):
@@ -124,8 +143,8 @@ class EmbeddingConfig(_Section):
     """bge-m3 嵌入模型参数，在 Python 进程内加载。"""
 
     model_path: Path = Field(
-        default=Path("models/bge-m3"),
-        description="HuggingFace 格式模型目录，相对项目根或绝对路径",
+        default=PROJECT_ROOT / "models" / "bge-m3",
+        description="HuggingFace 格式模型目录。写相对路径时按项目根解析，不按工作目录",
     )
     use_fp16: bool = Field(
         default=True,
@@ -134,6 +153,12 @@ class EmbeddingConfig(_Section):
     device: str = Field(default="cuda", min_length=1)
     dense_dim: int = Field(default=1024, gt=0, description="稠密向量维度")
     batch_size: int = Field(default=8, gt=0, description="推理批大小，受显存限制")
+
+    @field_validator("model_path", mode="before")
+    @classmethod
+    def _resolve_model_path(cls, value: str | Path) -> Path:
+        """把配置里写的相对路径按项目根解析，而不是按当前工作目录。"""
+        return resolve_project_path(value)
 
 
 class RetrievalConfig(_Section):

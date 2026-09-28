@@ -13,6 +13,7 @@ from cbe_rag.config.settings import (
     RetrievalConfig,
     Settings,
     get_settings,
+    resolve_project_path,
 )
 
 __all__ = [
