@@ -1,12 +1,15 @@
-"""手动验证脚本：逐模块演示当前已完成的功能。
+"""手动验证脚本：真实调用已完成的模块，检查外部服务是否连通。
 
 在 PyCharm 里右键本文件 → Run 即可，不需要任何命令行参数。
 
-与 check_services.py 的区别：
-    check_services.py  正式的连通性检查，有退出码，可接 CI
-    manual_check.py    学习与排查用，逐段演示每个模块怎么调用
+本脚本不含任何模拟数据——每一行输出都由真实的函数调用产生。
+不通过的项目会如实报出来，不会假装成功。
 
-两个坑已在本文件内绕开：
+与 check_services.py 的区别：
+    check_services.py  正式的环境检查，输出精简，有退出码，可接 CI
+    manual_check.py    排查与学习用，逐段展开，能看到返回值内部结构
+
+两个环境坑已在本文件内绕开：
     1. import 路径：把 src 加入搜索路径，不依赖 PyCharm 的 Sources Root 设置
     2. .env 路径：按本文件位置推算项目根目录，不依赖运行时的工作目录
 """
@@ -23,15 +26,13 @@ ENV_FILE = PROJECT_ROOT / ".env"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from cbe_rag.observability import setup_console  # noqa: E402
-
-# 让 print 的中文不乱码、且与日志的显示顺序一致
-setup_console()
-
 from cbe_rag.config.settings import Settings  # noqa: E402
-from cbe_rag.observability import get_logger, setup_logging  # noqa: E402
+from cbe_rag.observability import get_logger, setup_console, setup_logging  # noqa: E402
 from cbe_rag.storage import MilvusStore, MongoStore, MysqlStore, RedisStore  # noqa: E402
-from cbe_rag.storage.health import StorageAdapter  # noqa: E402
+from cbe_rag.storage.health import HealthResult, StorageAdapter  # noqa: E402
+
+# 让 print 的中文不乱码，且与日志的显示顺序一致
+setup_console()
 
 LINE = "=" * 66
 
@@ -43,8 +44,22 @@ def section(title: str) -> None:
     print(LINE)
 
 
-def load_settings() -> Settings | None:
-    """加载配置。失败时打印可读的提示并返回 None。"""
+def build_adapters(settings: Settings) -> list[StorageAdapter]:
+    """按配置构造四个存储适配器。
+
+    声明成 list[StorageAdapter] 之后，下面的循环不需要任何类型判断——
+    这是 StorageAdapter 协议带来的好处。
+    """
+    return [
+        MilvusStore(settings.milvus),
+        MongoStore(settings.mongodb),
+        MysqlStore(settings.mysql),
+        RedisStore(settings.redis),
+    ]
+
+
+def show_config() -> Settings | None:
+    """加载并打印配置。配置有问题时返回 None。"""
     section("1. 配置层 config/settings.py")
 
     if not ENV_FILE.is_file():
@@ -80,95 +95,117 @@ def load_settings() -> Settings | None:
     print("  拒答阈值 : %r  （None 表示尚未标定）" % settings.retrieval.refuse_threshold)
 
     print()
-    print("  密码保护检查（下面是 redis 与 llm 两段的 repr）：")
+    print("  密码保护：下面两行是真实配置对象的 repr，密码应为掩码")
     print("    %s" % repr(settings.redis))
     print("    %s" % repr(settings.llm))
-    print("  密码应显示为 SecretStr('**********')，不得出现明文。")
 
     return settings
 
 
-def check_adapters(settings: Settings) -> None:
-    section("2. 存储适配层 storage/  —— 统一遍历四个适配器")
+def probe_services(settings: Settings) -> list[HealthResult]:
+    """真实调用四个服务的 health_check，返回探测结果。"""
+    section("2. 存储适配层 storage/  —— 真实探测四个外部服务")
 
-    # 关键点：声明成 list[StorageAdapter] 之后，循环里不需要任何类型判断
-    adapters: list[StorageAdapter] = [
-        MilvusStore(settings.milvus),
-        MongoStore(settings.mongodb),
-        MysqlStore(settings.mysql),
-        RedisStore(settings.redis),
-    ]
-
+    adapters = build_adapters(settings)
+    results: list[HealthResult] = []
     try:
         for adapter in adapters:
-            print("  " + adapter.health_check().render())
+            result = adapter.health_check()
+            results.append(result)
+            print("  " + result.render())
     finally:
         for adapter in adapters:
             adapter.close()
 
+    passed = sum(1 for r in results if r.ok)
     print()
-    print("  上面这段代码里没有一行 if/else 判断具体是哪种适配器，")
-    print("  这是 StorageAdapter 协议带来的好处。")
+    print("  通过 %d / %d" % (passed, len(results)))
+    print("  上面每一行都是一次真实的网络调用，没有模拟数据。")
+
+    return results
 
 
-def check_single_adapter(settings: Settings) -> None:
-    section("3. 单个适配器 —— 看返回值的结构")
+def show_result_structure(settings: Settings) -> None:
+    """打印单个健康检查返回值的内部结构。"""
+    section("3. 返回值结构 —— 以 Redis 为例")
 
     store = RedisStore(settings.redis)
     try:
         result = store.health_check()
-        print("  service    = %s" % result.service)
-        print("  ok         = %s" % result.ok)
-        print("  detail     = %s" % result.detail)
-        print("  elapsed_ms = %.2f" % result.elapsed_ms)
-        print("  render()   = %s" % result.render())
     finally:
         store.close()
 
+    print("  service    = %s" % result.service)
+    print("  ok         = %s" % result.ok)
+    print("  detail     = %s" % result.detail)
+    print("  elapsed_ms = %.2f" % result.elapsed_ms)
+    print("  render()   = %s" % result.render())
     print()
-    print("  失败时 ok=False，detail 里是异常类型与消息，不会抛异常出来。")
+    print("  服务不可达时 ok=False，detail 里放异常类型与消息，")
+    print("  异常不会抛给调用方——这是 health_check 的契约。")
 
 
-def check_logging() -> None:
+def report_via_logging(results: list[HealthResult]) -> None:
+    """用日志输出第 2 段的真实探测结果。
+
+    这里不打任何模拟文本，日志内容就是上面真实调用的结果。
+    """
     section("4. 日志 observability/logging.py")
 
-    setup_logging("DEBUG")
+    setup_logging("INFO")
     logger = get_logger("cbe_rag.manual_check")
-
-    print("  下面四条是演示文本，用来看格式和级别过滤效果。")
-    print("  内容本身没有含义，不代表任何真实服务状态。")
+    print("  级别 INFO：下面每行日志对应一个服务，内容取自真实探测结果")
     print()
-    logger.debug("【示例】调试级别，只有 setup_logging(DEBUG) 时才显示")
-    logger.info("【示例】信息级别")
-    logger.warning("【示例】警告级别，参数会被填进占位符：%s", "这里")
-    logger.error("【示例】错误级别")
+    for result in results:
+        if result.ok:
+            logger.info("%s 连通正常：%s", result.service, result.detail)
+        else:
+            logger.error("%s 未通过：%s", result.service, result.detail)
 
     print()
-    print("  再看错误处理：传一个不存在的级别名")
+    print("  级别 DEBUG：多输出一条含真实配置值的调试信息")
+    print()
+    setup_logging("DEBUG")
+    first = results[0]
+    logger.debug("首个服务的真实探测耗时 %.2f ms", first.elapsed_ms)
+
+    print()
+    print("  非法级别名应当报错而不是静默降级：")
     try:
         setup_logging("VERBOSE")
-        print("  [问题] 没有报错，说明静默降级了")
+        print("  [FAIL] 没有报错，说明静默降级了")
     except ValueError as exc:
         print("  [OK] 按预期报错：%s" % exc)
 
 
 def main() -> int:
     print()
-    print("已完成模块的手动验证")
+    print("已完成模块的真实调用验证")
 
-    settings = load_settings()
+    settings = show_config()
     if settings is None:
+        print()
+        print(LINE)
+        print("配置未就绪，后续检查无法进行。")
+        print(LINE)
         return 1
 
-    check_adapters(settings)
-    check_single_adapter(settings)
-    check_logging()
+    results = probe_services(settings)
+    show_result_structure(settings)
+    report_via_logging(results)
 
+    failed = [r for r in results if not r.ok]
     print()
     print(LINE)
-    print("验证结束。若有 FAIL 项，先解决再往下走。")
+    if failed:
+        print("未通过 %d 项：" % len(failed))
+        for result in failed:
+            print("  - %s：%s" % (result.service, result.detail))
+    else:
+        print("四个外部服务全部连通。")
     print(LINE)
-    return 0
+
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
