@@ -1,0 +1,14 @@
+[project]
+name = "cbe-rag"
+version = "0.1.0"
+description = "跨境电商多平台规则与税务合规 RAG 问答系统"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = [
+    "integration: 依赖真实外部服务的测试，默认跳过，用 pytest -m integration 单独运行",
+]
+# 默认排除集成测试，保证「跑全量测试」不依赖外部服务
+addopts = "-m 'not integration'"
