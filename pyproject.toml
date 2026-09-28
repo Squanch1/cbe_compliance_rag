@@ -5,7 +5,8 @@ description = "跨境电商多平台规则与税务合规 RAG 问答系统"
 requires-python = ">=3.10"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# scripts 也加入路径，便于对运维脚本里的纯函数做单元测试
+pythonpath = ["src", "scripts"]
 testpaths = ["tests"]
 markers = [
     "integration: 依赖真实外部服务的测试，默认跳过，用 pytest -m integration 单独运行",
