@@ -1,0 +1,166 @@
+"""HTML 解析器的单元测试。
+
+内联的 HTML 片段仿照真实语料的结构：正文在 div#help-content 里，
+噪声在 header 与容器之外。真实文件的验证另做。
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from cbe_rag.ingestion.parser.html_parser import (
+    HtmlParseError,
+    content_selector_for,
+    extract_blocks,
+)
+from cbe_rag.ingestion.parser.schema import BlockType
+
+SELECTOR = "#help-content"
+
+
+def page(content: str) -> str:
+    """把内容包进一份仿真的页面：正文在容器内，噪声在容器外。"""
+    return (
+        "<!DOCTYPE html><html><head><title>页面标题</title>"
+        "<style>.x{color:red}</style></head><body>"
+        "<header class='mega-menu'><h3>选择您的首选语言</h3>"
+        "<ul><li>English</li><li>中文</li></ul></header>"
+        "<h1>欧洲增值税常见问题</h1>"
+        "<div id='help-content'>%s</div>"
+        "<footer><h2>需要更多帮助？</h2></footer>"
+        "<script>var x = 1;</script>"
+        "</body></html>" % content
+    )
+
+
+class TestExtractBlocks:
+    def test_heading_levels_follow_tag_names(self) -> None:
+        html = page("<h2>二级</h2><h3>三级</h3><h4>四级</h4>")
+
+        blocks = extract_blocks(html, SELECTOR)
+
+        assert [b.level for b in blocks] == [2, 3, 4]
+        assert all(b.type is BlockType.HEADING for b in blocks)
+
+    def test_paragraph_is_extracted(self) -> None:
+        blocks = extract_blocks(page("<p>这是一段正文。</p>"), SELECTOR)
+
+        assert len(blocks) == 1
+        assert blocks[0].type is BlockType.PARAGRAPH
+        assert blocks[0].text == "这是一段正文。"
+
+    def test_list_item_is_extracted(self) -> None:
+        blocks = extract_blocks(page("<ul><li>第一项</li><li>第二项</li></ul>"), SELECTOR)
+
+        assert [b.type for b in blocks] == [BlockType.LIST_ITEM, BlockType.LIST_ITEM]
+        assert [b.text for b in blocks] == ["第一项", "第二项"]
+
+    def test_table_is_extracted(self) -> None:
+        html = page("<table><tr><td>国家</td><td>税率</td></tr></table>")
+
+        blocks = extract_blocks(html, SELECTOR)
+
+        assert len(blocks) == 1
+        assert blocks[0].type is BlockType.TABLE
+        assert "国家" in blocks[0].text and "税率" in blocks[0].text
+
+    def test_order_follows_document_order(self) -> None:
+        html = page("<h4>问题一</h4><p>答案一</p><h4>问题二</h4><p>答案二</p>")
+
+        blocks = extract_blocks(html, SELECTOR)
+
+        assert [b.order for b in blocks] == [0, 1, 2, 3]
+        assert [b.text for b in blocks] == ["问题一", "答案一", "问题二", "答案二"]
+
+    def test_whitespace_is_normalised(self) -> None:
+        blocks = extract_blocks(page("<p>  多个\n\n  空白   字符  </p>"), SELECTOR)
+
+        assert blocks[0].text == "多个 空白 字符"
+
+    def test_empty_elements_are_skipped(self) -> None:
+        html = page("<p>有内容</p><p>   </p><p></p><p>也有内容</p>")
+
+        blocks = extract_blocks(html, SELECTOR)
+
+        assert [b.text for b in blocks] == ["有内容", "也有内容"]
+
+    def test_order_is_contiguous_after_skipping(self) -> None:
+        # 跳过空元素后 order 不能留洞，否则下游按 order 排序会出现空档
+        blocks = extract_blocks(page("<p>甲</p><p></p><p>乙</p>"), SELECTOR)
+
+        assert [b.order for b in blocks] == [0, 1]
+
+
+class TestNoiseIsolation:
+    def test_content_outside_container_is_ignored(self) -> None:
+        # header 里的语言选择器、footer 里的「需要更多帮助」都不该进来
+        blocks = extract_blocks(page("<p>正文</p>"), SELECTOR)
+
+        texts = " ".join(b.text for b in blocks)
+        assert "选择您的首选语言" not in texts
+        assert "需要更多帮助" not in texts
+        assert "欧洲增值税常见问题" not in texts  # h1 在容器外
+
+    def test_script_and_style_are_removed(self) -> None:
+        html = page("<script>var a=1;</script><style>.y{}</style><p>正文</p>")
+
+        blocks = extract_blocks(html, SELECTOR)
+
+        assert [b.text for b in blocks] == ["正文"]
+
+    def test_nested_elements_are_not_double_counted(self) -> None:
+        # <li><p>…</p></li> 若两个都提取，同一段文字会出现两次
+        blocks = extract_blocks(page("<ul><li><p>列表项内容</p></li></ul>"), SELECTOR)
+
+        assert len(blocks) == 1
+        assert blocks[0].text == "列表项内容"
+
+    def test_container_itself_not_extracted(self) -> None:
+        blocks = extract_blocks(page("<p>正文</p>"), SELECTOR)
+
+        assert all(b.type is not BlockType.HEADING or b.level > 1 for b in blocks)
+
+
+class TestContainerLookup:
+    def test_missing_container_raises(self) -> None:
+        # 宁可报错也不产出脏数据——没有容器意味着选择器配错了
+        html = "<html><body><p>没有目标容器</p></body></html>"
+
+        with pytest.raises(HtmlParseError, match="正文容器"):
+            extract_blocks(html, SELECTOR)
+
+    def test_error_message_names_the_selector(self) -> None:
+        html = "<html><body><p>x</p></body></html>"
+
+        with pytest.raises(HtmlParseError) as excinfo:
+            extract_blocks(html, "#not-exist")
+
+        assert "#not-exist" in str(excinfo.value)
+
+    def test_empty_container_yields_no_blocks(self) -> None:
+        assert extract_blocks(page(""), SELECTOR) == []
+
+
+class TestContentSelectorFor:
+    def test_known_site_returns_its_selector(self) -> None:
+        selector = content_selector_for(
+            "https://sellercentral.amazon.com/help/hub/reference/external/G202163020"
+        )
+
+        assert selector == "#help-content"
+
+    def test_www_prefix_is_tolerated(self) -> None:
+        selector = content_selector_for("https://www.sellercentral.amazon.com/help")
+
+        assert selector == "#help-content"
+
+    def test_unknown_site_raises(self) -> None:
+        # 未配置的站点直接报错，逼着先看真实 DOM 再接入
+        with pytest.raises(HtmlParseError, match="未配置"):
+            content_selector_for("https://example.com/some/page")
+
+    def test_error_lists_known_sites(self) -> None:
+        with pytest.raises(HtmlParseError) as excinfo:
+            content_selector_for("https://example.com/x")
+
+        assert "sellercentral.amazon.com" in str(excinfo.value)
