@@ -25,7 +25,7 @@
 | 关系库 | MySQL | 宿主机 `127.0.0.1:3306`，库存文档元数据与维度表 |
 | 文档库 | MongoDB | VM 上，存原始文档全文与解析中间产物 |
 | 缓存 | Redis | VM 上，需密码；用于查询缓存与会话上下文 |
-| 嵌入模型 | bge-m3 | 经 Ollama 提供，1024 维，输出已 L2 归一化 |
+| 嵌入模型 | bge-m3 | 进程内加载，fp16，同时输出稠密（1024 维）与稀疏两路向量 |
 | 生成模型 | 阿里云百炼 | 走 OpenAI 兼容模式，模型名走配置项 |
 
 ## 3. 外部服务依赖
@@ -38,8 +38,9 @@
 | Redis | `192.168.88.101:6379` | 需要密码 |
 | MongoDB | `192.168.88.101:27017` | 需要密码 |
 | MySQL | `127.0.0.1:3306` | 需要密码 |
-| Ollama | `127.0.0.1:11434` | 无 |
 | 阿里云百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | API Key |
+
+嵌入模型不通过外部服务提供，在 Python 进程内加载，模型文件路径走配置项。
 
 命名空间约定：
 
@@ -76,7 +77,8 @@
 │   ├── unit/
 │   ├── integration/
 │   └── fixtures/
-└── data/                     # 原始与处理数据，不入库
+├── data/                     # 原始与处理数据，不入库
+└── models/                   # 本地模型文件（bge-m3），不入库
 ```
 
 ## 5. 编码规范
@@ -172,4 +174,6 @@ Spec 是开发的边界约束，与本文档冲突时以 Spec 为准。
 - 本机控制台默认编码为 cp936，输出中文会乱码。所有 `open()` 显式指定 `encoding="utf-8"`，运行 Python 前设置 `PYTHONUTF8=1`
 - `numpy` 锁定 1.26.4，**不得升级到 2.x**
 - Milvus Lite 在 Windows 上不可用（无 Windows wheel），本地开发一律连 VM 上的 Milvus
-- Ollama 需要手动启动，未启动时嵌入功能不可用
+- bge-m3 模型文件放 `models/bge-m3/`，必须为 HuggingFace 格式（含 `config.json`、`model.safetensors` 与 tokenizer 文件）。Ollama 的 GGUF 格式**不能**用于进程内加载
+- 嵌入模型在进程内加载，FastAPI 与 Streamlit 冷启动时会先加载模型，需数秒至数十秒
+- 显卡 6GB 显存，模型固定使用 fp16。**fp16 与 fp32 产出的向量存在差异，建索引与查询必须使用同一精度**，不得混用
