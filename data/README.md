@@ -37,9 +37,10 @@ data/
 | `country` | 是 | 取值见下表 | 适用国家或地区 |
 | `doc_type` | 是 | 取值见下表 | 文档类型 |
 | `effective_date` | 否 | `YYYY-MM-DD` | 生效日期。填不出就留空，回答时会标注「未标注生效日期」 |
-| `collected_date` | 是 | `YYYY-MM-DD` | 你下载这份文档的日期 |
 | `platform` | 是 | `amazon` | 首期固定填 `amazon` |
 | `notes` | 否 | 文本 | 备注，导入工具不读，写给自己看 |
+
+**采集日期（`collected_date`）不在清单里**——导入时程序自动填当天日期。这个字段只用于运维排查（判断语料有多旧），不影响检索与回答，所以不占用你的手工维护成本。
 
 ### 取值
 
@@ -73,14 +74,14 @@ data/
 一行填好的记录长这样：
 
 ```csv
-file_name,title,source_url,publisher,country,doc_type,effective_date,collected_date,platform,notes
-ioss-threshold.html,IOSS - Import One-Stop Shop,https://europa.eu/youreurope/business/taxation/vat/one-stop-shop/index_en.htm,eu_commission,EU,guideline,2021-07-01,2026-09-28,amazon,货值 150 欧元阈值
+file_name,title,source_url,publisher,country,doc_type,effective_date,platform,notes
+ioss-threshold.html,IOSS - Import One-Stop Shop,https://europa.eu/youreurope/business/taxation/vat/one-stop-shop/index_en.htm,eu_commission,EU,guideline,2021-07-01,amazon,货值 150 欧元阈值
 ```
 
 注意 `effective_date` 留空是允许的：
 
 ```csv
-eu-vat-guide.pdf,VAT Guide for Small Businesses,https://.../vat-guide.pdf,eu_commission,EU,guideline,,2026-09-28,amazon,PDF 双栏排版
+eu-vat-guide.pdf,VAT Guide for Small Businesses,https://.../vat-guide.pdf,eu_commission,EU,guideline,,amazon,PDF 双栏排版
 ```
 
 ## 注意事项
