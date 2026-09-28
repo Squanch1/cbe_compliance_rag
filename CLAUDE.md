@@ -1,0 +1,153 @@
+# CLAUDE.md
+
+本文件是本项目的开发约定，优先级高于全局配置。所有代码、文档、提交必须遵守。
+
+## 1. 项目定位
+
+跨境电商多平台规则与税务合规 RAG 问答系统。面向跨境电商卖家，回答关于平台规则与各国税务合规的问题，**所有回答必须附带可追溯的原文引用**。
+
+首期范围（窄而深）：
+
+- 平台：Amazon
+- 税种：欧盟增值税（Value Added Tax, VAT）与进口一站式服务（Import One-Stop Shop, IOSS）
+- 语料：平台政策页与欧盟官方指南，HTML 与 PDF 混合
+
+## 2. 技术栈
+
+| 层 | 选型 | 说明 |
+|---|---|---|
+| 语言 | Python 3.10.18 | conda 环境 `rag_gpu` |
+| 解释器 | `C:\Users\squanch\miniconda3\envs\rag_gpu\python.exe` | Git Bash 下 `conda activate` 会报错，一律用绝对路径调用 |
+| 包管理 | uv | `uv pip install --python <上述解释器绝对路径> <包名>` |
+| 服务层 | FastAPI + uvicorn | 对外提供 HTTP 接口，自带 OpenAPI 文档 |
+| 界面 | Streamlit | 仅做演示界面，业务逻辑一律不写在里面 |
+| 向量库 | Milvus 2.6.6 | 部署在 VM，客户端 `pymilvus` 需与 2.6.x 对齐 |
+| 关系库 | MySQL | 宿主机 `127.0.0.1:3306`，库存文档元数据与维度表 |
+| 文档库 | MongoDB | VM 上，存原始文档全文与解析中间产物 |
+| 缓存 | Redis | VM 上，需密码；用于查询缓存与会话上下文 |
+| 嵌入模型 | bge-m3 | 经 Ollama 提供，1024 维，输出已 L2 归一化 |
+| 生成模型 | 阿里云百炼 | 走 OpenAI 兼容模式，模型名走配置项 |
+
+## 3. 外部服务依赖
+
+所有服务地址、端口、凭据**只从环境变量读取**，禁止硬编码。
+
+| 服务 | 地址 | 认证 |
+|---|---|---|
+| Milvus | `192.168.88.101:19530` | 无 |
+| Redis | `192.168.88.101:6379` | 需要密码 |
+| MongoDB | `192.168.88.101:27017` | 需要密码 |
+| MySQL | `127.0.0.1:3306` | 需要密码 |
+| Ollama | `127.0.0.1:11434` | 无 |
+| 阿里云百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | API Key |
+
+命名空间约定：
+
+- Milvus 使用独立 database `cbe_compliance`，**不得写入 `default` 库**（其中已有其他项目的 `demo_v8`）
+- MySQL 使用独立 database `cbe_compliance`
+
+## 4. 目录结构
+
+```
+.
+├── CLAUDE.md
+├── README.md
+├── .env.example              # 配置模板，只含占位符
+├── .env                      # 真实配置，已被 gitignore
+├── pyproject.toml
+├── docs/
+│   ├── spec/                 # Spec 开发边界约束规范
+│   └── adr/                  # 架构决策记录（Architecture Decision Record）
+├── src/cbe_rag/
+│   ├── config/               # 配置加载与校验
+│   ├── storage/              # Milvus / MySQL / MongoDB / Redis 适配层
+│   ├── ingestion/            # 采集与解析
+│   │   ├── fetcher/          # 下载原始文档
+│   │   ├── parser/           # 解析为统一中间表示
+│   │   └── chunker/          # 切分
+│   ├── indexing/             # 向量化与写入索引
+│   ├── retrieval/            # 召回与精排
+│   ├── generation/           # 提示词组装与答案生成
+│   ├── api/                  # FastAPI 路由与数据模型
+│   └── observability/        # 日志与追踪
+├── apps/web/                 # Streamlit 前端
+├── scripts/                  # 运维脚本
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── fixtures/
+└── data/                     # 原始与处理数据，不入库
+```
+
+## 5. 编码规范
+
+### 5.1 通用
+
+- 所有函数必须有完整类型注解，包括返回值
+- 代码、注释、文档、提交信息中**不使用 Emoji**
+- 可读性优先，不炫技
+- 优先使用不可变对象，避免原地修改传入的列表或字典
+- 单个文件控制在 200-400 行，**硬上限 800 行**
+- 相邻命名空间使用多层小模块，避免造出巨型模块
+
+### 5.2 配置与密钥
+
+- 配置统一经 `pydantic-settings` 的 `Settings` 类加载，启动时校验
+- 缺失必填配置时**启动即失败**，不允许带默认值静默降级
+- 任何密钥、密码、Token **不得出现在**代码、文档、测试固件、提交信息中
+- 新增配置项必须同步更新 `.env.example`
+
+### 5.3 外部服务访问
+
+- 所有外部服务访问封装在 `src/cbe_rag/storage/` 下的适配器内，业务层不直接 import 驱动
+- 每个适配器提供 `health_check()` 方法，供连通性脚本和健康检查接口调用
+- 网络调用必须设置超时，禁止无限等待
+
+### 5.4 检索与生成
+
+- 提示词模板集中存放，不散落在代码里
+- 生成结果必须携带来源引用（文档标识 + 段落定位），无法给出引用时**必须显式声明依据不足**，禁止编造
+- 税务与平台规则具有时效性，所有文档必须记录生效日期与采集日期
+
+## 6. 测试要求
+
+- 测试先行：先写测试，再写实现
+- 使用 `pytest`
+- 单元测试不依赖外部服务，外部依赖用 mock 或 fake
+- 集成测试可以依赖真实服务，但必须能被标记跳过（`pytest -m integration`）
+- 每次提交前必须本地跑通全量测试
+- 检索与生成质量用评测集衡量，指标与基线写入 Spec
+
+## 7. Git 工作流
+
+- 提交信息遵循 Conventional Commits：`feat` / `fix` / `refactor` / `docs` / `test` / `chore`
+- 小步提交，一次提交只做一件事
+- 提交前必须运行测试
+- 远程仓库为公开仓库，提交前确认无敏感信息
+
+## 8. 与用户协作方式
+
+- 使用中文交流
+- 关键技术术语首次出现时给出中文、英文全称与缩写
+- 重大架构变更前先提问澄清，不擅自决定
+- 实现新功能前先给出方案并获确认
+
+## 9. Spec 文档索引
+
+Spec 是开发的边界约束，与本文档冲突时以 Spec 为准。
+
+| 文档 | 内容 |
+|---|---|
+| `docs/spec/00-overview.md` | 项目目标与用户故事 |
+| `docs/spec/01-scope.md` | 范围边界：做什么、不做什么 |
+| `docs/spec/02-architecture.md` | 分层架构与模块职责 |
+| `docs/spec/03-data-model.md` | 数据模型与存储分工 |
+| `docs/spec/04-api-contract.md` | 接口契约 |
+| `docs/spec/05-acceptance.md` | 验收标准与里程碑 |
+
+## 10. 已知环境限制
+
+- 本机控制台默认编码为 cp936，输出中文会乱码。所有 `open()` 显式指定 `encoding="utf-8"`，运行 Python 前设置 `PYTHONUTF8=1`
+- `numpy` 锁定 1.26.4，**不得升级到 2.x**
+- Milvus Lite 在 Windows 上不可用（无 Windows wheel），本地开发一律连 VM 上的 Milvus
+- Ollama 需要手动启动，未启动时嵌入功能不可用
