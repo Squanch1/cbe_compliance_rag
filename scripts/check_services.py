@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 
 # 直接以脚本方式运行时，把 src 加入模块搜索路径。
@@ -26,58 +25,29 @@ from pydantic import ValidationError  # noqa: E402
 
 from cbe_rag.config.settings import ENV_EXAMPLE_PATH, ENV_FILE_PATH, Settings  # noqa: E402
 from cbe_rag.observability import setup_console  # noqa: E402
-from cbe_rag.storage import MilvusStore, MongoStore, MysqlStore, RedisStore  # noqa: E402
-from cbe_rag.storage.health import HealthResult, StorageAdapter  # noqa: E402
-
-# HuggingFace 格式模型的必需文件。
-# Ollama 的 GGUF 文件不含这些，因此在进程内加载场景下不可用。
-_REQUIRED_MODEL_FILES = ("config.json",)
-# 权重文件二选一即可
-_WEIGHT_FILE_CANDIDATES = ("model.safetensors", "pytorch_model.bin")
+from cbe_rag.storage import (  # noqa: E402
+    EmbeddingStore,
+    MilvusStore,
+    MongoStore,
+    MysqlStore,
+    RedisStore,
+)
+from cbe_rag.storage.health import StorageAdapter  # noqa: E402
 
 
 def build_adapters(settings: Settings) -> list[StorageAdapter]:
-    """按配置构造四个存储适配器。"""
+    """构造全部需要检查的组件。
+
+    四个外部服务加一个进程内加载的模型。五者都实现 StorageAdapter 协议，
+    因此下面可以不加判断地统一遍历。
+    """
     return [
         MilvusStore(settings.milvus),
         MongoStore(settings.mongodb),
         MysqlStore(settings.mysql),
         RedisStore(settings.redis),
+        EmbeddingStore(settings.embedding),
     ]
-
-
-def check_embedding_model(model_path: Path) -> HealthResult:
-    """检查 bge-m3 模型文件是否就位。
-
-    只验证文件结构，不实际加载模型——加载需要数十秒且占用显存，
-    不适合放进连通性检查。真正的加载验证在嵌入适配器首次使用时进行。
-    """
-    started = time.perf_counter()
-    model_dir = Path(model_path)
-
-    if not model_dir.is_dir():
-        ok = False
-        detail = "目录不存在：%s" % model_dir
-    else:
-        missing = [name for name in _REQUIRED_MODEL_FILES if not (model_dir / name).is_file()]
-        has_weight = any((model_dir / name).is_file() for name in _WEIGHT_FILE_CANDIDATES)
-
-        if missing:
-            ok = False
-            detail = "缺少文件：%s" % "、".join(missing)
-        elif not has_weight:
-            ok = False
-            detail = "缺少权重文件，需包含 %s 之一" % " 或 ".join(_WEIGHT_FILE_CANDIDATES)
-        else:
-            ok = True
-            detail = "路径=%s 精度=fp16" % model_dir
-
-    return HealthResult(
-        service="bge-m3",
-        ok=ok,
-        detail=detail,
-        elapsed_ms=(time.perf_counter() - started) * 1000.0,
-    )
 
 
 def report_config_error(exc: ValidationError) -> None:
@@ -121,7 +91,6 @@ def main() -> int:
     adapters = build_adapters(settings)
     try:
         results = [adapter.health_check() for adapter in adapters]
-        results.append(check_embedding_model(settings.embedding.model_path))
     finally:
         for adapter in adapters:
             adapter.close()

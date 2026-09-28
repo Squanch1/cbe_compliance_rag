@@ -14,10 +14,22 @@ import inspect
 
 import pytest
 
-from cbe_rag.storage import MilvusStore, MongoStore, MysqlStore, RedisStore
+from cbe_rag.storage import (
+    EmbeddingStore,
+    MilvusStore,
+    MongoStore,
+    MysqlStore,
+    RedisStore,
+)
 from cbe_rag.storage.health import StorageAdapter
 
-ADAPTER_CLASSES = [MilvusStore, MongoStore, MysqlStore, RedisStore]
+ADAPTER_CLASSES = [
+    MilvusStore,
+    MongoStore,
+    MysqlStore,
+    RedisStore,
+    EmbeddingStore,
+]
 
 
 def class_name(cls: type) -> str:

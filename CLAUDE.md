@@ -181,6 +181,6 @@ Spec 是开发的边界约束，与本文档冲突时以 Spec 为准。
 - 本机控制台默认编码为 cp936，输出中文会乱码。所有 `open()` 显式指定 `encoding="utf-8"`，运行 Python 前设置 `PYTHONUTF8=1`
 - `numpy` 锁定 1.26.4，**不得升级到 2.x**
 - Milvus Lite 在 Windows 上不可用（无 Windows wheel），本地开发一律连 VM 上的 Milvus
-- bge-m3 模型文件放 `models/bge-m3/`，必须为 HuggingFace 格式（含 `config.json`、`model.safetensors` 与 tokenizer 文件）。Ollama 的 GGUF 格式**不能**用于进程内加载
-- 嵌入模型在进程内加载，FastAPI 与 Streamlit 冷启动时会先加载模型，需数秒至数十秒
+- bge-m3 模型文件放 `models/bge-m3/`，必须为 HuggingFace 格式（含 `config.json` 与 tokenizer 文件，权重为 `model.safetensors` 或 `pytorch_model.bin` 之一）。Ollama 的 GGUF 格式**不能**用于进程内加载
+- 嵌入模型在进程内加载。本机实测：首次加载约 10 秒、占 1.07GB 显存，之后单次编码 3 条文本约 0.08 秒。FastAPI 与 Streamlit 冷启动时会先加载模型
 - 显卡 6GB 显存，模型固定使用 fp16。**fp16 与 fp32 产出的向量存在差异，建索引与查询必须使用同一精度**，不得混用
