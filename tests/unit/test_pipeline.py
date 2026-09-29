@@ -21,6 +21,7 @@ from cbe_rag.indexing.pipeline import (
     PreparedDocument,
     analyze_document,
     build_vectors,
+    index_document,
     prepare_document,
     register_document,
 )
@@ -214,15 +215,31 @@ class TestPreparedFields:
 
 
 class RecordingMysqlStore:
-    """记录写操作的假适配器，不连服务。"""
+    """记录读写操作的假适配器，不连服务。
 
-    def __init__(self, siblings: list[str] | None = None) -> None:
+    查询结果按需注入：不传就是「库里什么都没有」，也就是全新文档。
+    """
+
+    def __init__(
+        self,
+        siblings: list[str] | None = None,
+        by_hash: DocumentRecord | None = None,
+        by_url: DocumentRecord | None = None,
+    ) -> None:
         self.inserted: list[DocumentRecord] = []
         self.meta_updates: list[DocumentRecord] = []
         self.status_updates: list[tuple[str, DocumentStatus]] = []
         self.chunks_written: list[tuple[str, list[Chunk]]] = []
         self.sibling_lookups: list[tuple[str, str]] = []
         self._siblings = siblings if siblings is not None else []
+        self._by_hash = by_hash
+        self._by_url = by_url
+
+    def get_document_by_hash(self, content_hash: str) -> DocumentRecord | None:
+        return self._by_hash
+
+    def find_active_by_source_url(self, source_url: str) -> DocumentRecord | None:
+        return self._by_url
 
     def insert_document(
         self, record: DocumentRecord, *, now: Any = None
@@ -499,9 +516,11 @@ class TestBuildVectors:
 class RecordingMilvusStore:
     """记录写操作的假 Milvus 适配器，不连服务。"""
 
-    def __init__(self) -> None:
+    def __init__(self, synced: int = 1) -> None:
         self.deleted: list[str] = []
         self.upserted: list[list[ChunkVector]] = []
+        self.scalar_updates: list[dict[str, Any]] = []
+        self._synced = synced
 
     def delete_by_doc(self, doc_id: str) -> None:
         self.deleted.append(doc_id)
@@ -509,6 +528,19 @@ class RecordingMilvusStore:
     def upsert_chunks(self, vectors: list[ChunkVector]) -> int:
         self.upserted.append(list(vectors))
         return len(vectors)
+
+    def update_scalar_fields(
+        self, doc_id: str, *, country: str, doc_type: str, publisher: str
+    ) -> int:
+        self.scalar_updates.append(
+            {
+                "doc_id": doc_id,
+                "country": country,
+                "doc_type": doc_type,
+                "publisher": publisher,
+            }
+        )
+        return self._synced
 
 
 class FakeCounter:
@@ -730,3 +762,120 @@ class TestParseFailure:
 
         assert "html.selector" in result.detail
         assert "交人工" in result.detail
+
+
+class TestSkipThroughIndexDocument:
+    def test_unchanged_document_writes_nothing(self, tmp_path: Path) -> None:
+        raw = write_html_file(tmp_path)
+        existing = make_record(file_content_hash(raw), doc_id="doc-1")
+        context = make_context(mysql=RecordingMysqlStore(by_hash=existing))
+
+        outcome = index_document(make_document(raw), context)
+
+        assert outcome.action is ImportAction.SKIP
+        assert outcome.ok is True
+        assert outcome.doc_id == "doc-1"
+        assert context.mysql.chunks_written == []
+        assert context.milvus.upserted == []
+        assert context.milvus.deleted == []
+
+    def test_skip_reuses_the_existing_doc_id(self, tmp_path: Path) -> None:
+        # 报告里的 doc_id 要能直接对回库里那条，不然没法查
+        raw = write_html_file(tmp_path)
+        existing = make_record(file_content_hash(raw), doc_id="doc-existing")
+        context = make_context(mysql=RecordingMysqlStore(by_hash=existing))
+
+        assert index_document(make_document(raw), context).doc_id == "doc-existing"
+
+
+class TestUpdateMetaThroughIndexDocument:
+    def test_updates_mysql_metadata(self, tmp_path: Path) -> None:
+        raw = write_html_file(tmp_path)
+        existing = make_record(file_content_hash(raw), publisher=None, doc_id="doc-1")
+        context = make_context(mysql=RecordingMysqlStore(by_hash=existing))
+
+        outcome = index_document(
+            make_document(raw, publisher="eu_commission"), context
+        )
+
+        assert outcome.action is ImportAction.UPDATE_META
+        assert context.mysql.meta_updates[0].publisher == "eu_commission"
+
+    def test_syncs_the_filter_dimensions_in_milvus(self, tmp_path: Path) -> None:
+        # 三个维度在 Milvus 里冗余存了一份，不同步的话按 publisher 筛
+        # 会漏掉这份文档——它的向量还在用旧值
+        raw = write_html_file(tmp_path)
+        existing = make_record(file_content_hash(raw), publisher=None, doc_id="doc-1")
+        context = make_context(mysql=RecordingMysqlStore(by_hash=existing))
+
+        index_document(make_document(raw, publisher="eu_commission"), context)
+
+        assert context.milvus.scalar_updates == [
+            {
+                "doc_id": "doc-1",
+                "country": "EU",
+                "doc_type": "faq",
+                "publisher": "eu_commission",
+            }
+        ]
+
+    def test_does_not_rechunk_or_reembed(self, tmp_path: Path) -> None:
+        # 切块与向量只依赖正文，元数据改了重跑一遍纯属白干
+        raw = write_html_file(tmp_path)
+        existing = make_record(file_content_hash(raw), publisher=None, doc_id="doc-1")
+        context = make_context(mysql=RecordingMysqlStore(by_hash=existing))
+
+        index_document(make_document(raw, publisher="eu_commission"), context)
+
+        assert context.mysql.chunks_written == []
+        assert context.milvus.upserted == []
+        assert context.milvus.deleted == []
+
+    def test_leaves_the_vector_store_when_metadata_breaks(self, tmp_path: Path) -> None:
+        # 改完反而不齐了（比如把 publisher 清空）：门禁对它的要求和
+        # 第一次入库时一样，不该继续留在向量库里
+        raw = write_html_file(tmp_path)
+        existing = make_record(file_content_hash(raw), doc_id="doc-1")
+        context = make_context(mysql=RecordingMysqlStore(by_hash=existing))
+
+        outcome = index_document(make_document(raw, publisher=None), context)
+
+        assert context.milvus.deleted == ["doc-1"]
+        assert ("doc-1", DocumentStatus.PENDING) in context.mysql.status_updates
+        assert context.milvus.scalar_updates == []
+        assert "publisher" in outcome.detail
+
+
+class TestNewDocumentThroughIndexDocument:
+    def test_registers_and_indexes(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        outcome = index_document(make_document(write_html_file(tmp_path)), context)
+
+        assert outcome.action is ImportAction.NEW
+        assert outcome.ok is True
+        assert len(context.mysql.inserted) == 1
+        assert len(context.mysql.chunks_written) == 1
+        assert context.milvus.upserted != []
+
+    def test_outcome_matches_what_was_written(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        outcome = index_document(make_document(write_html_file(tmp_path)), context)
+
+        assert outcome.doc_id == context.mysql.inserted[0].doc_id
+        assert outcome.file_name == "amazon-eu-vat-faq.html"
+        assert outcome.parent_count >= 1
+        assert outcome.child_count >= 1
+
+    def test_metadata_gate_still_reports_ok(self, tmp_path: Path) -> None:
+        # 没入库不算失败，文档确实收下了
+        context = make_context()
+
+        outcome = index_document(
+            make_document(write_html_file(tmp_path), publisher=None), context
+        )
+
+        assert outcome.ok is True
+        assert outcome.parent_count == 0
+        assert "publisher" in outcome.detail

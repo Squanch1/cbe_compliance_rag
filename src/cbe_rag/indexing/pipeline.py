@@ -21,7 +21,7 @@ from cbe_rag.ingestion.parser.schema import Chunk, ChunkLevel, new_doc_id
 from cbe_rag.ingestion.parser.tier import ParseOutcome, ParseRequest
 from cbe_rag.indexing.decision import decide
 from cbe_rag.indexing.hashing import file_content_hash
-from cbe_rag.indexing.models import Decision, ImportAction
+from cbe_rag.indexing.models import Decision, DocumentOutcome, ImportAction
 from cbe_rag.storage.ddl import DocumentStatus
 from cbe_rag.storage.embedding import EmbeddingStore
 from cbe_rag.storage.milvus_store import MilvusStore
@@ -312,4 +312,100 @@ def analyze_document(
         detail="入库 %d 个父块、%d 个子块" % (parent_count, len(children)),
         parent_count=parent_count,
         child_count=len(children),
+    )
+
+
+def _update_meta(
+    document: CollectedDocument,
+    prepared: PreparedDocument,
+    context: IndexingContext,
+    *,
+    now: datetime | None,
+) -> DocumentOutcome:
+    """内容没变，只是清单上的登记改了。
+
+    切块与向量只依赖正文，元数据改了重跑一遍纯属白干，所以这里只改属性。
+
+    **但 Milvus 里冗余存着三个过滤维度，要一并同步**，否则按 publisher
+    筛会漏掉这份文档——它的向量还在用旧值。
+    """
+    matched = prepared.decision.matched
+    if matched is None:
+        raise ValueError("UPDATE_META 缺少命中记录，判重结果不完整")
+
+    record = _to_record(
+        document, prepared.content_hash, matched.doc_id, DocumentStatus.INDEXED
+    )
+    context.mysql.update_document_meta(record, now=now)
+
+    if record.missing_fields:
+        # 改完之后反而不齐了（比如把 publisher 清空）。门禁对它的要求
+        # 和第一次入库时一样：元数据不齐的文档不该留在向量库里，否则
+        # 会被检索到并挂进引用，而缺 source_url 时拿不出可核对的出处。
+        # 向量都删了，也就不必再同步过滤字段。
+        context.milvus.delete_by_doc(matched.doc_id)
+        context.mysql.update_document_status(
+            matched.doc_id, DocumentStatus.PENDING, now=now
+        )
+        return DocumentOutcome(
+            file_name=document.raw_path.name,
+            action=ImportAction.UPDATE_META,
+            ok=True,
+            detail="元数据改后不齐（缺 %s），已移出向量库"
+            % "、".join(record.missing_fields),
+            doc_id=matched.doc_id,
+        )
+
+    synced = context.milvus.update_scalar_fields(
+        matched.doc_id,
+        country=record.country or "",
+        doc_type=record.doc_type or "",
+        publisher=record.publisher or "",
+    )
+    return DocumentOutcome(
+        file_name=document.raw_path.name,
+        action=ImportAction.UPDATE_META,
+        ok=True,
+        detail="元数据已更新，同步了 %d 条向量的过滤字段" % synced,
+        doc_id=matched.doc_id,
+    )
+
+
+def index_document(
+    document: CollectedDocument,
+    context: IndexingContext,
+    *,
+    now: datetime | None = None,
+) -> DocumentOutcome:
+    """处理一份文档：判重、按判出的动作执行、汇总成一条结果。
+
+    这是批量导入逐个文档调用的入口。**单个文档出错不在这里吞掉**——
+    异常照常向上抛，由调用方决定是整批中止还是记下来继续。
+    """
+    prepared = prepare_document(document, context.mysql)
+    action = prepared.decision.action
+
+    if action is ImportAction.SKIP:
+        matched = prepared.decision.matched
+        return DocumentOutcome(
+            file_name=document.raw_path.name,
+            action=action,
+            ok=True,
+            detail="内容与清单登记都未变，跳过",
+            doc_id=matched.doc_id if matched else None,
+        )
+
+    if action is ImportAction.UPDATE_META:
+        return _update_meta(document, prepared, context, now=now)
+
+    record = register_document(document, prepared, context.mysql, now=now)
+    result = analyze_document(document, record, context, now=now)
+    return DocumentOutcome(
+        file_name=document.raw_path.name,
+        action=action,
+        ok=result.ok,
+        detail=result.detail,
+        doc_id=record.doc_id,
+        parent_count=result.parent_count,
+        child_count=result.child_count,
     )
