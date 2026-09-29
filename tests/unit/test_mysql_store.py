@@ -12,6 +12,12 @@ from pymysql.err import MySQLError, OperationalError
 from pydantic import SecretStr
 
 from cbe_rag.config.settings import MysqlConfig
+from cbe_rag.storage.ddl import (
+    COUNTRY_SEED,
+    DOC_TYPE_SEED,
+    MYSQL_TABLES,
+    PUBLISHER_SEED,
+)
 from cbe_rag.storage.mysql_store import MysqlStore
 
 DEFAULT_ROW = ("8.0.36", "cbe_compliance")
@@ -28,12 +34,19 @@ def make_config() -> MysqlConfig:
 
 
 class FakeCursor:
-    """假的游标。记录执行过的 SQL，返回预设的行。"""
+    """假的游标。记录执行过的 SQL，返回预设的行与表名。"""
 
-    def __init__(self, row: tuple[Any, ...] | None, fail_with: Exception | None) -> None:
+    def __init__(
+        self,
+        row: tuple[Any, ...] | None,
+        fail_with: Exception | None,
+        tables: tuple[str, ...] = (),
+    ) -> None:
         self._row = row
         self._fail_with = fail_with
+        self._tables = tables
         self.executed: list[str] = []
+        self.executed_many: list[tuple[str, list[tuple[Any, ...]]]] = []
         self.closed = False
 
     def execute(self, sql: str) -> None:
@@ -41,22 +54,44 @@ class FakeCursor:
             raise self._fail_with
         self.executed.append(sql)
 
+    def executemany(self, sql: str, rows: list[tuple[Any, ...]]) -> None:
+        if self._fail_with is not None:
+            raise self._fail_with
+        self.executed_many.append((sql, rows))
+
     def fetchone(self) -> tuple[Any, ...] | None:
         return self._row
+
+    def fetchall(self) -> tuple[tuple[Any, ...], ...]:
+        """模拟 SHOW TABLES 的返回：每行一列。"""
+        return tuple((name,) for name in self._tables)
 
     def close(self) -> None:
         self.closed = True
 
 
 class FakeConnection:
-    """假的连接。记录是否被关闭，便于验证连接不泄漏。"""
+    """假的连接。记录关闭与事务调用，便于验证连接不泄漏、出错时回滚。"""
 
-    def __init__(self, row: tuple[Any, ...] | None, fail_with: Exception | None) -> None:
-        self.cursor_obj = FakeCursor(row, fail_with)
+    def __init__(
+        self,
+        row: tuple[Any, ...] | None,
+        fail_with: Exception | None,
+        tables: tuple[str, ...] = (),
+    ) -> None:
+        self.cursor_obj = FakeCursor(row, fail_with, tables)
         self.closed = False
+        self.commits = 0
+        self.rollbacks = 0
 
     def cursor(self) -> FakeCursor:
         return self.cursor_obj
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
 
     def close(self) -> None:
         self.closed = True
@@ -77,16 +112,18 @@ class FakeConnector:
         row: tuple[Any, ...] | None = DEFAULT_ROW,
         query_fail_with: Exception | None = None,
         connect_fail_with: Exception | None = None,
+        tables: tuple[str, ...] = (),
     ) -> None:
         self._row = row
         self._query_fail_with = query_fail_with
         self._connect_fail_with = connect_fail_with
+        self._tables = tables
         self.connections: list[FakeConnection] = []
 
     def __call__(self) -> FakeConnection:
         if self._connect_fail_with is not None:
             raise self._connect_fail_with
-        conn = FakeConnection(self._row, self._query_fail_with)
+        conn = FakeConnection(self._row, self._query_fail_with, self._tables)
         self.connections.append(conn)
         return conn
 
@@ -232,3 +269,109 @@ class TestHealthCheckFailure:
         result = store.health_check()
 
         assert config.password.get_secret_value() not in result.detail
+
+
+class TestCreateSchema:
+    def test_creates_all_tables_when_none_exist(self) -> None:
+        store = MysqlStore(make_config(), connect=FakeConnector(tables=()))
+
+        created = store.create_schema()
+
+        assert set(created) == {name for name, _ in MYSQL_TABLES}
+
+    def test_reports_only_newly_created_tables(self) -> None:
+        # 返回值要能区分「这次真的建了」和「本来就有」，
+        # 否则脚本输出看着像每次都重建了一遍
+        already = MYSQL_TABLES[0][0]
+        store = MysqlStore(make_config(), connect=FakeConnector(tables=(already,)))
+
+        created = store.create_schema()
+
+        assert already not in created
+        assert len(created) == len(MYSQL_TABLES) - 1
+
+    def test_checks_existing_tables_first(self) -> None:
+        connector = FakeConnector(tables=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.create_schema()
+
+        assert "SHOW TABLES" in connector.last.cursor_obj.executed[0].upper()
+
+    def test_commits_on_success(self) -> None:
+        connector = FakeConnector(tables=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.create_schema()
+
+        assert connector.last.commits == 1
+
+    def test_rolls_back_on_failure(self) -> None:
+        connector = FakeConnector(tables=(), query_fail_with=MySQLError("语法错误"))
+        store = MysqlStore(make_config(), connect=connector)
+
+        with pytest.raises(MySQLError):
+            store.create_schema()
+
+        assert connector.last.rollbacks == 1
+
+    def test_connection_is_closed_even_on_failure(self) -> None:
+        connector = FakeConnector(tables=(), query_fail_with=MySQLError("语法错误"))
+        store = MysqlStore(make_config(), connect=connector)
+
+        with pytest.raises(MySQLError):
+            store.create_schema()
+
+        assert connector.last.closed is True
+
+    def test_every_ddl_uses_if_not_exists(self) -> None:
+        # 缺了这个就没法重复执行
+        for name, statement in MYSQL_TABLES:
+            assert "IF NOT EXISTS" in statement.upper(), name
+
+
+class TestSeedDimensions:
+    def test_returns_row_count_per_table(self) -> None:
+        store = MysqlStore(make_config(), connect=FakeConnector())
+
+        affected = store.seed_dimensions()
+
+        assert affected == {
+            "dim_country": len(COUNTRY_SEED),
+            "dim_doc_type": len(DOC_TYPE_SEED),
+            "dim_publisher": len(PUBLISHER_SEED),
+        }
+
+    def test_uses_upsert_not_plain_insert(self) -> None:
+        # 纯 INSERT 第二次执行就会撞主键，脚本没法重复跑
+        connector = FakeConnector()
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.seed_dimensions()
+
+        for sql, _ in connector.last.cursor_obj.executed_many:
+            assert "ON DUPLICATE KEY UPDATE" in sql.upper()
+
+    def test_rows_match_seed_data(self) -> None:
+        connector = FakeConnector()
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.seed_dimensions()
+
+        counts = [len(rows) for _, rows in connector.last.cursor_obj.executed_many]
+        assert counts == [len(COUNTRY_SEED), len(DOC_TYPE_SEED), len(PUBLISHER_SEED)]
+
+    def test_rolls_back_on_failure(self) -> None:
+        connector = FakeConnector(query_fail_with=MySQLError("表不存在"))
+        store = MysqlStore(make_config(), connect=connector)
+
+        with pytest.raises(MySQLError):
+            store.seed_dimensions()
+
+        assert connector.last.rollbacks == 1
+
+    def test_seed_data_has_no_duplicate_codes(self) -> None:
+        # 主键重复会让 upsert 互相覆盖，最后只剩一条
+        for seed in (COUNTRY_SEED, DOC_TYPE_SEED, PUBLISHER_SEED):
+            codes = [row[0] for row in seed]
+            assert len(codes) == len(set(codes))

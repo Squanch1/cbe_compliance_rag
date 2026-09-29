@@ -12,6 +12,12 @@ from typing import Any, Callable, Protocol
 import pymysql
 
 from cbe_rag.config.settings import MysqlConfig
+from cbe_rag.storage.ddl import (
+    COUNTRY_SEED,
+    DOC_TYPE_SEED,
+    MYSQL_TABLES,
+    PUBLISHER_SEED,
+)
 from cbe_rag.storage.health import HealthResult
 
 
@@ -21,7 +27,13 @@ class MysqlCursor(Protocol):
     def execute(self, sql: str) -> Any:
         ...
 
+    def executemany(self, sql: str, rows: list[tuple[Any, ...]]) -> Any:
+        ...
+
     def fetchone(self) -> tuple[Any, ...] | None:
+        ...
+
+    def fetchall(self) -> tuple[tuple[Any, ...], ...]:
         ...
 
     def close(self) -> None:
@@ -32,6 +44,12 @@ class MysqlConnection(Protocol):
     """连接中本适配器用到的部分。"""
 
     def cursor(self) -> MysqlCursor:
+        ...
+
+    def commit(self) -> None:
+        ...
+
+    def rollback(self) -> None:
         ...
 
     def close(self) -> None:
@@ -135,3 +153,89 @@ class MysqlStore:
         方法存在是为了满足 StorageAdapter 协议，让调用方能统一遍历所有适配器。
         """
         return None
+
+    def create_schema(self) -> list[str]:
+        """建表，返回本次新建的表名。
+
+        DDL 全部带 IF NOT EXISTS，因此可重复执行。返回的是**新建**的表名
+        而不是全部表名，让调用方能区分「这次真的建了」和「本来就有」。
+        """
+        connection = self._connect()
+        cursor = None
+        try:
+            cursor = connection.cursor()
+
+            # 先查现有表，才能分辨哪些是这次新建的
+            cursor.execute("SHOW TABLES")
+            existing = {row[0] for row in cursor.fetchall()}
+
+            created: list[str] = []
+            for name, statement in MYSQL_TABLES:
+                cursor.execute(statement)
+                if name not in existing:
+                    created.append(name)
+
+            connection.commit()
+            return created
+        except Exception:
+            # 出错时回滚再抛出。这里捕获所有异常只是为了确保回滚，
+            # 异常本身照常向上传播。
+            connection.rollback()
+            raise
+        finally:
+            _close_quietly(cursor)
+            _close_quietly(connection)
+
+    def seed_dimensions(self) -> dict[str, int]:
+        """灌入三张维度表的初始数据，返回每张表影响的行数。
+
+        用 INSERT ... ON DUPLICATE KEY UPDATE，因此可重复执行。
+        **以 ddl.py 里的定义为准**：直接改库里的值会被下次执行覆盖，
+        要调整维度数据应当改 ddl.py（见该模块的注释）。
+        """
+        statements: list[tuple[str, str, list[tuple[Any, ...]]]] = [
+            (
+                "dim_country",
+                "INSERT INTO dim_country (code, name_zh, name_en, is_active) "
+                "VALUES (%s, %s, %s, %s) AS new "
+                "ON DUPLICATE KEY UPDATE name_zh = new.name_zh, "
+                "name_en = new.name_en, is_active = new.is_active",
+                [tuple(row) for row in COUNTRY_SEED],
+            ),
+            (
+                "dim_doc_type",
+                "INSERT INTO dim_doc_type (code, name_zh, name_en, is_active) "
+                "VALUES (%s, %s, %s, %s) AS new "
+                "ON DUPLICATE KEY UPDATE name_zh = new.name_zh, "
+                "name_en = new.name_en, is_active = new.is_active",
+                [tuple(row) for row in DOC_TYPE_SEED],
+            ),
+            (
+                "dim_publisher",
+                "INSERT INTO dim_publisher (code, name_zh, name_en, official_url, is_active) "
+                "VALUES (%s, %s, %s, %s, %s) AS new "
+                "ON DUPLICATE KEY UPDATE name_zh = new.name_zh, "
+                "name_en = new.name_en, official_url = new.official_url, "
+                "is_active = new.is_active",
+                [tuple(row) for row in PUBLISHER_SEED],
+            ),
+        ]
+
+        connection = self._connect()
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            affected: dict[str, int] = {}
+            for name, statement, rows in statements:
+                cursor.executemany(statement, rows)
+                affected[name] = len(rows)
+            connection.commit()
+            return affected
+        except Exception:
+            # 出错时回滚再抛出。这里捕获所有异常只是为了确保回滚，
+            # 异常本身照常向上传播。
+            connection.rollback()
+            raise
+        finally:
+            _close_quietly(cursor)
+            _close_quietly(connection)

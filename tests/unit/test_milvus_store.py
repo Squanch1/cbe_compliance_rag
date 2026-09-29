@@ -7,7 +7,16 @@ from __future__ import annotations
 
 from pymilvus.exceptions import MilvusException
 
+from pymilvus import DataType
+
 from cbe_rag.config.settings import MilvusConfig
+from cbe_rag.storage.ddl import (
+    MILVUS_DENSE_INDEX,
+    MILVUS_FIELDS,
+    MILVUS_SCALAR_INDEX_FIELDS,
+    MILVUS_SCALAR_INDEX_TYPE,
+    MILVUS_SPARSE_INDEX,
+)
 from cbe_rag.storage.milvus_store import MilvusStore
 
 
@@ -199,3 +208,233 @@ class TestHealthResultRendering:
         store, _ = build_store(fail_with=connect_error("refused"))
 
         assert store.health_check().render().startswith("[FAIL]")
+
+
+class FakeSchema:
+    """假的 schema 构造器，记录加进来的字段。"""
+
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+        self.fields: list[tuple[str, object, dict[str, object]]] = []
+
+    def add_field(self, name: str, data_type: object, **params: object) -> None:
+        self.fields.append((name, data_type, params))
+
+
+class FakeIndexParams:
+    """假的索引参数构造器，记录加进来的索引。"""
+
+    def __init__(self) -> None:
+        self.indexes: list[tuple[str, str | None, str | None]] = []
+
+    def add_index(
+        self,
+        field_name: str,
+        index_type: str | None = None,
+        metric_type: str | None = None,
+    ) -> None:
+        self.indexes.append((field_name, index_type, metric_type))
+
+
+class FakeMilvusDbClient:
+    """假的、连接到业务库的客户端。"""
+
+    def __init__(self, collections: tuple[str, ...] = ()) -> None:
+        self._collections = list(collections)
+        self.created: list[tuple[str, FakeSchema]] = []
+        self.indexed: list[tuple[str, FakeIndexParams]] = []
+        self.schema_kwargs: dict[str, object] = {}
+        self.closed = False
+
+    def list_collections(self) -> list[str]:
+        return list(self._collections)
+
+    def create_schema(self, **kwargs: object) -> FakeSchema:
+        self.schema_kwargs = kwargs
+        return FakeSchema(**kwargs)
+
+    def prepare_index_params(self) -> FakeIndexParams:
+        return FakeIndexParams()
+
+    def create_collection(self, collection_name: str, **kwargs: object) -> None:
+        self.created.append((collection_name, kwargs["schema"]))  # type: ignore[arg-type]
+
+    def create_index(self, collection_name: str, **kwargs: object) -> None:
+        self.indexed.append((collection_name, kwargs["index_params"]))  # type: ignore[arg-type]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def build_db_store(
+    collections: tuple[str, ...] = (),
+) -> tuple[MilvusStore, FakeMilvusDbClient, FakeMilvusClient]:
+    """构造注入了「库客户端」与「普通客户端」的适配器。
+
+    两个客户端分开注入，才能验证集合操作走的是哪一个。
+    """
+    db_client = FakeMilvusDbClient(collections)
+    plain_client = FakeMilvusClient()
+    store = MilvusStore(
+        make_config(),
+        client_factory=lambda: plain_client,
+        db_client_factory=lambda: db_client,
+    )
+    return store, db_client, plain_client
+
+
+class TestCreateCollection:
+    def test_creates_when_absent(self) -> None:
+        store, db_client, _ = build_db_store(collections=())
+
+        assert store.create_collection(dense_dim=1024) is True
+        assert [name for name, _ in db_client.created] == ["chunks_v1"]
+
+    def test_skips_when_present(self) -> None:
+        store, db_client, _ = build_db_store(collections=("chunks_v1",))
+
+        assert store.create_collection(dense_dim=1024) is False
+        assert db_client.created == []
+
+    def test_uses_the_database_client(self) -> None:
+        # 回归：方法级 db_name 参数会被 Milvus 静默忽略——实测
+        # create_collection(name, schema, db_name="cbe_compliance")
+        # 会把集合建到 default 库。必须走连接到业务库的客户端。
+        store, db_client, plain_client = build_db_store()
+
+        store.create_collection(dense_dim=1024)
+
+        assert db_client.created, "应当使用库客户端"
+        assert not plain_client.closed, "普通客户端不该被用到"
+
+    def test_disables_auto_id_and_dynamic_fields(self) -> None:
+        # auto_id 会覆盖我们自定的 chunk_id；动态字段会让 schema 失控
+        store, db_client, _ = build_db_store()
+
+        store.create_collection(dense_dim=1024)
+
+        assert db_client.schema_kwargs["auto_id"] is False
+        assert db_client.schema_kwargs["enable_dynamic_field"] is False
+
+
+class TestCollectionSchema:
+    def test_all_defined_fields_are_added(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.create_collection(dense_dim=1024)
+
+        schema = db_client.created[0][1]
+        added = [name for name, _, _ in schema.fields]
+        # 稠密向量由调用方传入维度，单独加，因此顺序上排在最前
+        assert added[0] == "dense_vector"
+        assert set(added) == {name for name, _, _ in MILVUS_FIELDS} | {"dense_vector"}
+
+    def test_chunk_id_is_the_primary_key(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.create_collection(dense_dim=1024)
+
+        schema = db_client.created[0][1]
+        primary = [f for f in schema.fields if f[2].get("is_primary")]
+        assert len(primary) == 1
+        assert primary[0][0] == "chunk_id"
+        assert primary[0][1] is DataType.VARCHAR
+
+    def test_dense_dimension_comes_from_the_argument(self) -> None:
+        # 维度必须与嵌入模型一致，因此由调用方传入而不是写死在字段表里。
+        # 写死会形成第二个真相来源，改了嵌入配置而忘了改这里就静默不匹配。
+        store, db_client, _ = build_db_store()
+
+        store.create_collection(dense_dim=768)
+
+        schema = db_client.created[0][1]
+        dense = next(f for f in schema.fields if f[0] == "dense_vector")
+        assert dense[1] is DataType.FLOAT_VECTOR
+        assert dense[2]["dim"] == 768
+
+    def test_dense_dimension_is_never_in_the_field_table(self) -> None:
+        # 字段表里不该出现 dense_vector，否则会与传入的维度冲突
+        assert "dense_vector" not in {name for name, _, _ in MILVUS_FIELDS}
+
+    def test_sparse_vector_has_no_dimension(self) -> None:
+        # 稀疏向量的维度由词元索引隐式决定，指定了反而报错
+        store, db_client, _ = build_db_store()
+
+        store.create_collection(dense_dim=1024)
+
+        schema = db_client.created[0][1]
+        sparse = next(f for f in schema.fields if f[0] == "sparse_vector")
+        assert sparse[1] is DataType.SPARSE_FLOAT_VECTOR
+        assert "dim" not in sparse[2]
+
+
+class TestCollectionIndexes:
+    def test_dense_uses_configured_index_and_metric(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.create_collection(dense_dim=1024)
+
+        indexes = db_client.indexed[0][1].indexes
+        dense = next(i for i in indexes if i[0] == "dense_vector")
+        assert (dense[1], dense[2]) == MILVUS_DENSE_INDEX
+
+    def test_sparse_uses_inner_product(self) -> None:
+        # 稀疏向量只支持内积
+        store, db_client, _ = build_db_store()
+
+        store.create_collection(dense_dim=1024)
+
+        indexes = db_client.indexed[0][1].indexes
+        sparse = next(i for i in indexes if i[0] == "sparse_vector")
+        assert (sparse[1], sparse[2]) == MILVUS_SPARSE_INDEX
+
+    def test_every_filter_field_gets_a_scalar_index(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.create_collection(dense_dim=1024)
+
+        indexes = db_client.indexed[0][1].indexes
+        indexed_fields = {i[0] for i in indexes}
+        for field_name in MILVUS_SCALAR_INDEX_FIELDS:
+            assert field_name in indexed_fields
+
+    def test_scalar_indexes_use_inverted_type(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.create_collection(dense_dim=1024)
+
+        indexes = db_client.indexed[0][1].indexes
+        for field_name, index_type, _ in indexes:
+            if field_name in MILVUS_SCALAR_INDEX_FIELDS:
+                assert index_type == MILVUS_SCALAR_INDEX_TYPE
+
+
+class TestCloseReleasesBothClients:
+    def test_close_releases_database_client(self) -> None:
+        store, db_client, _ = build_db_store()
+        store.create_collection(dense_dim=1024)
+
+        store.close()
+
+        assert db_client.closed is True
+
+    def test_close_releases_both_when_both_were_used(self) -> None:
+        # 两个客户端都是懒创建的：没用到就不会建，close 也就不该去关它。
+        # 这里先让两个都建起来，再验证 close 把它们都释放。
+        store, db_client, plain_client = build_db_store()
+        store.health_check()
+        store.create_collection(dense_dim=1024)
+
+        store.close()
+
+        assert db_client.closed is True
+        assert plain_client.closed is True
+
+    def test_close_does_not_touch_unused_client(self) -> None:
+        # 从未使用的客户端不该被关闭——适配器只释放自己创建的东西
+        store, _, plain_client = build_db_store()
+        store.create_collection(dense_dim=1024)
+
+        store.close()
+
+        assert plain_client.closed is False

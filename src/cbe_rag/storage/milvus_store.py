@@ -13,9 +13,16 @@ from __future__ import annotations
 import time
 from typing import Callable, Protocol
 
-from pymilvus import MilvusClient
+from pymilvus import DataType, MilvusClient
 
 from cbe_rag.config.settings import MilvusConfig
+from cbe_rag.storage.ddl import (
+    MILVUS_DENSE_INDEX,
+    MILVUS_FIELDS,
+    MILVUS_SCALAR_INDEX_FIELDS,
+    MILVUS_SCALAR_INDEX_TYPE,
+    MILVUS_SPARSE_INDEX,
+)
 from cbe_rag.storage.health import HealthResult
 
 
@@ -29,6 +36,24 @@ class MilvusClientProtocol(Protocol):
         ...
 
     def list_databases(self) -> list[str]:
+        ...
+
+    def list_collections(self) -> list[str]:
+        ...
+
+    def create_database(self, database_name: str) -> Any:
+        ...
+
+    def create_schema(self, **kwargs: Any) -> Any:
+        ...
+
+    def prepare_index_params(self) -> Any:
+        ...
+
+    def create_collection(self, collection_name: str, **kwargs: Any) -> Any:
+        ...
+
+    def create_index(self, collection_name: str, **kwargs: Any) -> Any:
         ...
 
     def close(self) -> None:
@@ -45,6 +70,7 @@ class MilvusStore:
         self,
         config: MilvusConfig,
         client_factory: Callable[[], MilvusClientProtocol] | None = None,
+        db_client_factory: Callable[[], MilvusClientProtocol] | None = None,
     ) -> None:
         """初始化。
 
@@ -56,7 +82,13 @@ class MilvusStore:
         self._client_factory: Callable[[], MilvusClientProtocol] = (
             client_factory if client_factory is not None else self._connect_by_config
         )
+        self._db_client_factory: Callable[[], MilvusClientProtocol] = (
+            db_client_factory
+            if db_client_factory is not None
+            else self._connect_db_by_config
+        )
         self._client: MilvusClientProtocol | None = None
+        self._db_client: MilvusClientProtocol | None = None
 
     def _connect_by_config(self) -> MilvusClientProtocol:
         """按配置建立真实客户端。
@@ -68,11 +100,31 @@ class MilvusStore:
             uri="http://%s:%d" % (self._config.host, self._config.port)
         )
 
+    def _connect_db_by_config(self) -> MilvusClientProtocol:
+        """建立连接到**业务库**的客户端。
+
+        **必须在这里指定 db_name，不能在调用方法时传。** MilvusClient
+        的方法级 db_name 参数会被静默忽略——实测
+        create_collection(name, schema, db_name="cbe_compliance")
+        会把集合建到 default 库且不报错，而 default 库里有其他项目的
+        demo_v8，正是 CLAUDE.md 明令禁止写入的地方。
+        """
+        return MilvusClient(
+            uri="http://%s:%d" % (self._config.host, self._config.port),
+            db_name=self._config.database,
+        )
+
     def _get_client(self) -> MilvusClientProtocol:
         """返回已建立的客户端，没有就先建一个。"""
         if self._client is None:
             self._client = self._client_factory()
         return self._client
+
+    def _get_db_client(self) -> MilvusClientProtocol:
+        """返回连接到业务库的客户端，没有就先建一个。"""
+        if self._db_client is None:
+            self._db_client = self._db_client_factory()
+        return self._db_client
 
     def health_check(self) -> HealthResult:
         """探测 Milvus 连通性，并报告业务库是否已创建。
@@ -105,8 +157,64 @@ class MilvusStore:
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
         )
 
+    def ensure_database(self) -> bool:
+        """确保业务库存在，返回是否真的创建了。
+
+        用**不指定 db_name** 的客户端：目标库还不存在时，
+        带 db_name 的客户端连上去会直接失败。
+        """
+        client = self._get_client()
+        if self._config.database in client.list_databases():
+            return False
+        client.create_database(self._config.database)
+        return True
+
+    def create_collection(self, dense_dim: int) -> bool:
+        """创建向量集合，已存在则跳过。
+
+        dense_dim 是稠密向量的维度，**必须与嵌入模型一致**，因此由
+        调用方按嵌入配置传入，不在这里写死。
+
+        返回是否真的创建了（已存在时为 False），便于脚本区分
+        「这次真的建了」和「本来就有」。
+
+        **必须用连接到业务库的客户端**，理由见 _connect_db_by_config。
+        """
+        client = self._get_db_client()
+
+        if self._config.collection in client.list_collections():
+            return False
+
+        schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+        # 稠密向量单独加：维度来自嵌入配置而不是字段表
+        schema.add_field("dense_vector", DataType.FLOAT_VECTOR, dim=dense_dim)
+        for name, type_name, params in MILVUS_FIELDS:
+            schema.add_field(name, getattr(DataType, type_name), **params)
+        client.create_collection(self._config.collection, schema=schema)
+
+        # 稠密用精确检索，稀疏用倒排，三个过滤维度各建倒排索引。
+        # 索引参数直接取自 ddl，避免与文档里的定义两处写死。
+        index_params = client.prepare_index_params()
+        dense_type, dense_metric = MILVUS_DENSE_INDEX
+        index_params.add_index(
+            field_name="dense_vector", index_type=dense_type, metric_type=dense_metric
+        )
+        sparse_type, sparse_metric = MILVUS_SPARSE_INDEX
+        index_params.add_index(
+            field_name="sparse_vector", index_type=sparse_type, metric_type=sparse_metric
+        )
+        for field_name in MILVUS_SCALAR_INDEX_FIELDS:
+            index_params.add_index(
+                field_name=field_name, index_type=MILVUS_SCALAR_INDEX_TYPE
+            )
+        client.create_index(self._config.collection, index_params=index_params)
+
+        return True
+
     def close(self) -> None:
         """释放客户端。从未连接过时调用是安全的。"""
-        if self._client is not None:
-            self._client.close()
-            self._client = None
+        for client in (self._client, self._db_client):
+            if client is not None:
+                client.close()
+        self._client = None
+        self._db_client = None
