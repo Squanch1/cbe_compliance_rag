@@ -6,14 +6,18 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
+
 import pytest
 
 from cbe_rag.ingestion.parser.html_parser import (
     HtmlParseError,
     content_selector_for,
     extract_blocks,
+    parse_html,
 )
-from cbe_rag.ingestion.parser.schema import BlockType
+from cbe_rag.ingestion.parser.schema import BlockType, SourceFormat
 
 SELECTOR = "#help-content"
 
@@ -192,3 +196,83 @@ class TestContentSelectorFor:
             content_selector_for("https://example.com/x")
 
         assert "sellercentral.amazon.com" in str(excinfo.value)
+
+
+class TestParseHtml:
+    """从文件到 ParsedDocument 的组装。"""
+
+    URL = "https://sellercentral.amazon.com/help/hub/reference/external/G202163020"
+    DOC_ID = "6f1c2f7e-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+
+    def write(self, tmp_path: Path, html: str) -> Path:
+        path = tmp_path / "page.html"
+        path.write_text(html, encoding="utf-8")
+        return path
+
+    def test_returns_html_source_format(self, tmp_path: Path) -> None:
+        path = self.write(tmp_path, page("<p>正文</p>"))
+
+        document = parse_html(path, self.DOC_ID, self.URL)
+
+        assert document.source_format is SourceFormat.HTML
+
+    def test_title_comes_from_h1(self, tmp_path: Path) -> None:
+        # h1 在正文容器之外，需要单独提取
+        path = self.write(tmp_path, page("<p>正文</p>"))
+
+        assert parse_html(path, self.DOC_ID, self.URL).title == "欧洲增值税常见问题"
+
+    def test_title_falls_back_to_title_tag(self, tmp_path: Path) -> None:
+        html = "<html><head><title>页面标题</title></head><body><div id='help-content'><p>x</p></div></body></html>"
+        path = self.write(tmp_path, html)
+
+        assert parse_html(path, self.DOC_ID, self.URL).title == "页面标题"
+
+    def test_missing_title_raises(self, tmp_path: Path) -> None:
+        html = "<html><body><div id='help-content'><p>x</p></div></body></html>"
+        path = self.write(tmp_path, html)
+
+        with pytest.raises(HtmlParseError, match="标题"):
+            parse_html(path, self.DOC_ID, self.URL)
+
+    def test_blocks_match_extract_blocks(self, tmp_path: Path) -> None:
+        html = page("<h4>问题</h4><p>答案</p>")
+        path = self.write(tmp_path, html)
+
+        document = parse_html(path, self.DOC_ID, self.URL)
+
+        assert [b.text for b in document.blocks] == ["问题", "答案"]
+
+    def test_identity_fields_are_carried(self, tmp_path: Path) -> None:
+        path = self.write(tmp_path, page("<p>x</p>"))
+
+        document = parse_html(path, self.DOC_ID, self.URL)
+
+        assert document.doc_id == self.DOC_ID
+        assert document.source_path == path
+        assert document.parser_version
+
+    def test_parsed_at_is_injectable(self, tmp_path: Path) -> None:
+        # 固定时间戳，否则测试结果随运行时刻变化
+        path = self.write(tmp_path, page("<p>x</p>"))
+        moment = datetime(2026, 9, 28, 12, 0, 0)
+
+        assert parse_html(path, self.DOC_ID, self.URL, parsed_at=moment).parsed_at == moment
+
+    def test_missing_file_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(HtmlParseError, match="不存在"):
+            parse_html(tmp_path / "absent.html", self.DOC_ID, self.URL)
+
+    def test_unconfigured_site_propagates(self, tmp_path: Path) -> None:
+        path = self.write(tmp_path, page("<p>x</p>"))
+
+        with pytest.raises(HtmlParseError, match="未配置"):
+            parse_html(path, self.DOC_ID, "https://example.com/x")
+
+    def test_source_path_must_be_absolute(self, tmp_path: Path) -> None:
+        # ParsedDocument 会拒绝相对路径，这里确认错误能传出来
+        path = self.write(tmp_path, page("<p>x</p>"))
+        relative = Path("data/raw/x.html")
+
+        with pytest.raises(Exception, match="绝对路径"):
+            parse_html(relative, self.DOC_ID, self.URL)

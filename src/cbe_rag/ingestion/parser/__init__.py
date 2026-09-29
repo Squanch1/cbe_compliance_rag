@@ -1,10 +1,12 @@
 """解析为统一中间表示。"""
 
 from cbe_rag.ingestion.parser.html_parser import (
+    PARSER_VERSION,
     SITE_CONTENT_SELECTORS,
     HtmlParseError,
     content_selector_for,
     extract_blocks,
+    parse_html,
 )
 from cbe_rag.ingestion.parser.schema import (
     Block,
@@ -20,6 +22,7 @@ from cbe_rag.ingestion.parser.schema import (
 )
 
 __all__ = [
+    "PARSER_VERSION",
     "SITE_CONTENT_SELECTORS",
     "Block",
     "BlockType",
@@ -34,4 +37,5 @@ __all__ = [
     "make_child_chunk_id",
     "make_parent_chunk_id",
     "new_doc_id",
+    "parse_html",
 ]
