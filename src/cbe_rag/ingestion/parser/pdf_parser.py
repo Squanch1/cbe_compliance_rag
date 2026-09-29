@@ -159,7 +159,9 @@ def body_font_size(lines: list[TextLine]) -> float:
     return min(size for size, count in counts.items() if count == top_count)
 
 
-def heading_levels(lines: list[TextLine]) -> dict[float, int]:
+def heading_levels(
+    lines: list[TextLine], *, body_size: float | None = None
+) -> dict[float, int]:
     """把大于正文字号的字号映射成标题层级。
 
     字号越大层级越浅：最大的是 1 级，次大的是 2 级，依此类推。
@@ -168,15 +170,22 @@ def heading_levels(lines: list[TextLine]) -> dict[float, int]:
 
     小于或等于正文字号的都不算标题——实测欧盟文档里 11pt 是
     次级正文（免责声明、前言），不是标题。
+
+    `body_size` 传了就用它，不传才从 lines 里算。**分片段调用时必须传**：
+    正文字号是整份文档的属性，按片段各算一次会因片段的字号分布不同
+    而得出不同结论。实测踩过——某解析器按页调用，单页里 12pt 不是众数，
+    于是 12pt 反被当成标题，72% 的块被误判。
     """
     if not lines:
         return {}
 
-    body = body_font_size(lines)
-    larger = sorted(
-        {round(line.size, 1) for line in lines if line.size > body},
-        reverse=True,
-    )
+    body = round(body_size if body_size is not None else body_font_size(lines), 1)
+    # **先统一取整再比较，两步不能用不同的值。** 字号可能带浮点误差
+    # （pdfplumber 实测给出过 12.000000000000028），若用原值比较、
+    # 用取整后的值入集合，正文自己就会混进标题集合，整页正文都被判成
+    # 标题——实测某份 105 页 PDF 因此产出 1333 个假标题。
+    sizes = {round(line.size, 1) for line in lines}
+    larger = sorted((size for size in sizes if size > body), reverse=True)
     return {size: index + 1 for index, size in enumerate(larger)}
 
 
@@ -195,7 +204,9 @@ def _continues(previous: TextLine, current: TextLine) -> bool:
     return gap <= _PARAGRAPH_GAP
 
 
-def build_blocks(lines: list[TextLine]) -> list[Block]:
+def build_blocks(
+    lines: list[TextLine], *, body_size: float | None = None
+) -> list[Block]:
     """把行合并成块。
 
     字号大于正文的行单独成标题块；其余行按行距合并成段落：
@@ -203,11 +214,14 @@ def build_blocks(lines: list[TextLine]) -> list[Block]:
 
     PDF 里每行都是独立对象，段落边界只能靠行距推断——这是与 HTML
     最大的不同，HTML 有 `<p>` 直接标出边界。
+
+    `body_size` 透传给 heading_levels，分片段调用时必须传，
+    理由见那里。
     """
     if not lines:
         return []
 
-    levels = heading_levels(lines)
+    levels = heading_levels(lines, body_size=body_size)
     blocks: list[Block] = []
     pending: list[str] = []
     previous: TextLine | None = None

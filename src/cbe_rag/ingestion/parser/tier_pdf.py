@@ -8,9 +8,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+import pdfplumber
+
 from cbe_rag.ingestion.parser.pdf_parser import (
     PDF_PARSER_VERSION,
+    PdfParseError,
     TextLine,
+    body_font_size,
     build_blocks,
     parse_pdf,
 )
@@ -57,18 +61,30 @@ class TableAwarePdfTier:
        只返回块、不返回块的行位置，暂时做不到。跨页顺序是正确的。
     2. **当前语料中没有表格**，这一层的主路径未经验证。等收到带表格的
        文档（如税率对照表）后需要重新验证。
-    3. pdfplumber 比 PyMuPDF 慢，因此排在 L1 之后而非之前。
+    3. pdfplumber 比 PyMuPDF 慢一个数量级，因此排在 L1 之后而非之前。
     """
 
     name = "pdf.table_aware"
 
     def parse(self, request: ParseRequest) -> ParsedDocument:
-        import pdfplumber
-
-        entries: list[Block] = []
+        # **先逐页收集、不在这里切块。** 正文字号是整份文档的属性，
+        # 按页各算一次会因单页的字号分布不同而得出不同结论——实测按页
+        # 切时某份 105 页 PDF 有 72% 的块被误判成标题，而它的字号分布
+        # 本身完全正常（12pt 占 68%）。收集完再用全文行算一次字号。
+        pages: list[tuple[list[TextLine], list[Block]]] = []
         with pdfplumber.open(str(request.raw_path)) as pdf:
             for page_number, page in enumerate(pdf.pages, start=1):
-                entries.extend(self._page_blocks(page, page_number))
+                pages.append(_page_parts(page, page_number))
+
+        all_lines = [line for lines, _ in pages for line in lines]
+        if not all_lines:
+            raise PdfParseError("pdfplumber 未提取到任何文本行")
+
+        body_size = body_font_size(all_lines)
+        entries: list[Block] = []
+        for lines, table_blocks in pages:
+            entries.extend(build_blocks(lines, body_size=body_size))
+            entries.extend(table_blocks)
 
         blocks = [
             Block(
@@ -80,8 +96,6 @@ class TableAwarePdfTier:
             )
             for index, entry in enumerate(entries)
         ]
-        if not blocks:
-            raise ValueError("pdfplumber 未提取到任何内容块")
 
         return ParsedDocument(
             doc_id=request.doc_id,
@@ -93,21 +107,25 @@ class TableAwarePdfTier:
             blocks=blocks,
         )
 
-    @staticmethod
-    def _page_blocks(page: Any, page_number: int) -> list[Block]:
-        """提取一页的内容块：先表格外的文字，再表格。"""
-        tables = page.find_tables()
-        table_boxes = [table.bbox for table in tables]
 
-        words = [
-            word
-            for word in page.extract_words(extra_attrs=["size"])
-            if not _inside_any(word, table_boxes)
-        ]
-        text_blocks = build_blocks(_words_to_lines(words, page_number))
+def _page_parts(page: Any, page_number: int) -> tuple[list[TextLine], list[Block]]:
+    """提取一页：表格外的文字行，以及各表格转成的块。
 
-        table_blocks = [_table_to_block(table, page_number) for table in tables]
-        return list(text_blocks) + [b for b in table_blocks if b is not None]
+    只提取，不切块——切块要等全文的行齐了才好定正文字号。
+    """
+    tables = page.find_tables()
+    table_boxes = [table.bbox for table in tables]
+
+    words = [
+        word
+        for word in page.extract_words(extra_attrs=["size"])
+        if not _inside_any(word, table_boxes)
+    ]
+    table_blocks = [
+        block for block in (_table_to_block(table, page_number) for table in tables)
+        if block is not None
+    ]
+    return _words_to_lines(words, page_number), table_blocks
 
 
 def _inside_any(word: dict[str, Any], boxes: list[tuple[float, ...]]) -> bool:
@@ -124,7 +142,7 @@ def _words_to_lines(words: list[dict[str, Any]], page_number: int) -> list[TextL
     """把词按 y 聚成行。
 
     复用 pdf_parser 的 TextLine 结构，这样段落合并的规则
-    （行距阈值、跨页断开）与本层保持一致，不必重写一遍。
+    （行距阈值、跨页断开）与本项目其他解析器保持一致，不必重写一遍。
     """
     if not words:
         return []

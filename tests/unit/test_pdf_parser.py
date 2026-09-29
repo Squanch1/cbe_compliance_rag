@@ -367,3 +367,26 @@ class TestParsePdf:
     def test_missing_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(PdfParseError, match="不存在"):
             parse_pdf(tmp_path / "absent.pdf", "id", "标题")
+
+    def test_float_precision_does_not_leak_body_size_into_headings(self) -> None:
+        # 回归：字号可能带浮点误差（pdfplumber 实测给出过
+        # 12.000000000000028）。原实现用原值比较、用取整后的值入集合，
+        # 于是正文自己混进了标题集合，整页正文都被判成标题——
+        # 某份 105 页 PDF 因此产出 1333 个假标题，占全部块的 61%。
+        lines = make_lines(
+            ("带误差的正文", 12.000000000000028, 100.0),
+            ("正常正文", 12.0, 120.0),
+            ("真标题", 14.0, 140.0),
+        )
+
+        levels = heading_levels(lines)
+
+        assert levels == {14.0: 1}
+
+    def test_body_size_argument_is_rounded_before_comparison(self) -> None:
+        # 传入的 body_size 同样要先取整，否则遇到带误差的值会重演上面的问题
+        lines = make_lines(("正文", 12.0, 100.0), ("标题", 14.0, 120.0))
+
+        levels = heading_levels(lines, body_size=11.999999999999998)
+
+        assert levels == {14.0: 1}
