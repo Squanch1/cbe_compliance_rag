@@ -86,6 +86,7 @@ class AskResponse(BaseModel):
     answer: str
     refused: bool
     degraded: bool
+    cache_hit: bool
     citations: list[CitationOut]
     notes: list[str]
     retrieval: RetrievalOut
@@ -154,6 +155,7 @@ def to_ask_response(result: QaResponse) -> AskResponse:
         answer=result.answer.text,
         refused=result.refused,
         degraded=result.answer.degraded,
+        cache_hit=result.cache_hit,
         citations=[
             CitationOut(
                 parent_id=parent.parent_id,

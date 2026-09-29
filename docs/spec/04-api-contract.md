@@ -92,6 +92,7 @@ POST /api/v1/ask
   "answer": "进口一站式服务的适用金额上限为单票货件不超过 150 欧元 [1]。",
   "refused": false,
   "degraded": false,
+  "cache_hit": false,
   "citations": [
     {
       "parent_id": "8f3c..._p0007",
@@ -130,6 +131,8 @@ POST /api/v1/ask
 | `degraded = true` | 调了模型，但回答没有可核对的出处，已替换成「依据不足」 | 提示词或模型 |
 
 两者都为 `true` 时以 `refused` 为准（根本没走到生成那一步）。
+
+`cache_hit` 只对单轮请求可能为 `true`——多轮不缓存，理由见 2.4。
 
 **`answer` 永远是最终要展示的文本。** 拒答或降级时它已被替换，调用方
 直接展示即可，不必再判断——少一处判断，就少一个「忘了判断」的机会。
