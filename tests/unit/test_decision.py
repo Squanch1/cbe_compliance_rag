@@ -15,12 +15,12 @@ from cbe_rag.indexing.decision import _COMPARED_FIELDS, decide
 from cbe_rag.indexing.models import ImportAction
 from cbe_rag.ingestion.parser.schema import DocumentMeta
 from cbe_rag.storage.ddl import DocumentStatus
-from cbe_rag.storage.records import ExistingDocument
+from cbe_rag.storage.records import DocumentRecord
 
 TODAY = date(2026, 9, 29)
 COLLECTED = date(2026, 9, 20)
 
-_BASE_EXISTING = ExistingDocument(
+_BASE_EXISTING = DocumentRecord(
     doc_id="doc-1",
     content_hash="a" * 64,
     status=DocumentStatus.INDEXED,
@@ -32,10 +32,11 @@ _BASE_EXISTING = ExistingDocument(
     doc_type="faq",
     effective_date=None,
     collected_date=COLLECTED,
+    raw_path="C:/data/raw/amazon-eu-vat-faq.html",
 )
 
 
-def existing(**overrides: Any) -> ExistingDocument:
+def existing(**overrides: Any) -> DocumentRecord:
     """造一条库里的记录，字段可按需覆盖。"""
     return replace(_BASE_EXISTING, **overrides)
 

@@ -21,11 +21,11 @@ from cbe_rag.indexing.models import (
     count_by_action,
 )
 from cbe_rag.storage.ddl import DocumentStatus
-from cbe_rag.storage.records import ExistingDocument
+from cbe_rag.storage.records import DocumentRecord
 
 TODAY = date(2026, 9, 29)
 
-_BASE = ExistingDocument(
+_BASE = DocumentRecord(
     doc_id="doc-1",
     content_hash="a" * 64,
     status=DocumentStatus.INDEXED,
@@ -37,10 +37,11 @@ _BASE = ExistingDocument(
     doc_type="faq",
     effective_date=None,
     collected_date=TODAY,
+    raw_path="C:/data/raw/amazon-eu-vat-faq.html",
 )
 
 
-def make_existing(**overrides: Any) -> ExistingDocument:
+def make_existing(**overrides: Any) -> DocumentRecord:
     """造一条库里的记录，字段可按需覆盖。"""
     return replace(_BASE, **overrides)
 
@@ -82,7 +83,7 @@ class TestCountByAction:
         assert count_by_action(make_report([]), ImportAction.NEW) == 0
 
 
-class TestExistingDocument:
+class TestDocumentRecord:
     def test_carries_the_doc_id_that_must_be_reused(self) -> None:
         # 判重命中时 doc_id 要取自这里而不是新生成：chunk_id 由 doc_id
         # 派生，换一个就等于在向量库里另起一套前缀

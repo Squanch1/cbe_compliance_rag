@@ -13,7 +13,7 @@ from __future__ import annotations
 from cbe_rag.ingestion.parser.schema import DocumentMeta
 from cbe_rag.indexing.models import Decision, ImportAction
 from cbe_rag.storage.ddl import DocumentStatus
-from cbe_rag.storage.records import ExistingDocument
+from cbe_rag.storage.records import DocumentRecord
 
 # 判重时要比对的元数据字段。
 #
@@ -36,8 +36,8 @@ _COMPARED_FIELDS: tuple[str, ...] = (
 def decide(
     meta: DocumentMeta,
     *,
-    by_hash: ExistingDocument | None = None,
-    by_url: ExistingDocument | None = None,
+    by_hash: DocumentRecord | None = None,
+    by_url: DocumentRecord | None = None,
 ) -> Decision:
     """判定这份文档该怎么处理。
 

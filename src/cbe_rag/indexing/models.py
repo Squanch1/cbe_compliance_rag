@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from cbe_rag.ingestion.fetcher.collector import MissingFile
-from cbe_rag.storage.records import ExistingDocument
+from cbe_rag.storage.records import DocumentRecord
 
 
 class ImportAction(str, Enum):
@@ -46,8 +46,8 @@ class Decision:
     """
 
     action: ImportAction
-    matched: ExistingDocument | None = None
-    previous: ExistingDocument | None = None
+    matched: DocumentRecord | None = None
+    previous: DocumentRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ class ImportReport:
 
     outcomes: list[DocumentOutcome]
     missing_files: list[MissingFile]
-    orphans: list[ExistingDocument]
+    orphans: list[DocumentRecord]
 
 
 def count_by_action(report: ImportReport, action: ImportAction) -> int:
