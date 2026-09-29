@@ -14,19 +14,21 @@ import re
 import time
 from typing import Any, Callable, Protocol
 
-from pymilvus import DataType, MilvusClient
+from pymilvus import AnnSearchRequest, DataType, MilvusClient, WeightedRanker
 from pymilvus.client.types import LoadState
 
 from cbe_rag.config.settings import MilvusConfig
 from cbe_rag.storage.ddl import (
+    MILVUS_DENSE_FIELD,
     MILVUS_DENSE_INDEX,
     MILVUS_FIELDS,
     MILVUS_SCALAR_INDEX_FIELDS,
     MILVUS_SCALAR_INDEX_TYPE,
+    MILVUS_SPARSE_FIELD,
     MILVUS_SPARSE_INDEX,
 )
 from cbe_rag.storage.health import HealthResult
-from cbe_rag.storage.records import ChunkVector
+from cbe_rag.storage.records import ChunkVector, VectorHit
 
 
 class MilvusClientProtocol(Protocol):
@@ -82,6 +84,29 @@ class MilvusClientProtocol(Protocol):
         output_fields: list[str] | None = None,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
+        ...
+
+    def search(
+        self,
+        collection_name: str,
+        data: list[Any],
+        anns_field: str,
+        search_params: dict[str, Any],
+        limit: int,
+        filter: str = "",
+        **kwargs: Any,
+    ) -> list[list[dict[str, Any]]]:
+        ...
+
+    def hybrid_search(
+        self,
+        collection_name: str,
+        reqs: list[AnnSearchRequest],
+        ranker: WeightedRanker,
+        limit: int,
+        output_fields: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[list[dict[str, Any]]]:
         ...
 
     def close(self) -> None:
@@ -262,7 +287,7 @@ class MilvusStore:
 
         schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
         # 稠密向量单独加：维度来自嵌入配置而不是字段表
-        schema.add_field("dense_vector", DataType.FLOAT_VECTOR, dim=dense_dim)
+        schema.add_field(MILVUS_DENSE_FIELD, DataType.FLOAT_VECTOR, dim=dense_dim)
         for name, type_name, params in MILVUS_FIELDS:
             schema.add_field(name, getattr(DataType, type_name), **params)
         client.create_collection(self._config.collection, schema=schema)
@@ -272,11 +297,15 @@ class MilvusStore:
         index_params = client.prepare_index_params()
         dense_type, dense_metric = MILVUS_DENSE_INDEX
         index_params.add_index(
-            field_name="dense_vector", index_type=dense_type, metric_type=dense_metric
+            field_name=MILVUS_DENSE_FIELD,
+            index_type=dense_type,
+            metric_type=dense_metric,
         )
         sparse_type, sparse_metric = MILVUS_SPARSE_INDEX
         index_params.add_index(
-            field_name="sparse_vector", index_type=sparse_type, metric_type=sparse_metric
+            field_name=MILVUS_SPARSE_FIELD,
+            index_type=sparse_type,
+            metric_type=sparse_metric,
         )
         for field_name in MILVUS_SCALAR_INDEX_FIELDS:
             index_params.add_index(
@@ -371,6 +400,94 @@ class MilvusStore:
         ]
         client.upsert(collection_name=self._config.collection, data=updated)
         return len(updated)
+
+    def hybrid_search(
+        self,
+        dense: list[float],
+        sparse: dict[int, float],
+        *,
+        dense_limit: int,
+        sparse_limit: int,
+        weights: tuple[float, float],
+        limit: int,
+        filter_expression: str = "",
+    ) -> list[VectorHit]:
+        """两路召回后融合，返回融合分从高到低的命中。
+
+        **两路的候选数通常不同**（默认 20 与 40），这是实测定的：稀疏路的
+        分数分布很陡，头部之外基本是噪声，但头部偶尔能捞出稠密路完全找
+        不到的专有名词，多取一些给融合一次机会。
+
+        weights 是 (稠密权重, 稀疏权重)。融合前两路各自归一化——它们的
+        量纲本来就不可比（同一个问题下稠密 0.5867、稀疏 0.0786）。
+
+        结果为空表示没有任何命中，不是错误。
+        """
+        if limit <= 0:
+            return []
+
+        self._ensure_loaded()
+        requests = [
+            AnnSearchRequest(
+                data=[dense],
+                anns_field=MILVUS_DENSE_FIELD,
+                param={"metric_type": MILVUS_DENSE_INDEX[1]},
+                limit=dense_limit,
+                filter=filter_expression or None,
+            ),
+            AnnSearchRequest(
+                data=[sparse],
+                anns_field=MILVUS_SPARSE_FIELD,
+                param={"metric_type": MILVUS_SPARSE_INDEX[1]},
+                limit=sparse_limit,
+                filter=filter_expression or None,
+            ),
+        ]
+
+        results = self._get_db_client().hybrid_search(
+            collection_name=self._config.collection,
+            reqs=requests,
+            ranker=WeightedRanker(*weights),
+            limit=limit,
+            output_fields=["chunk_id", "doc_id"],
+        )
+        if not results or not results[0]:
+            return []
+
+        return [
+            VectorHit(
+                chunk_id=hit["chunk_id"],
+                doc_id=hit["entity"]["doc_id"],
+                score=float(hit["distance"]),
+            )
+            for hit in results[0]
+        ]
+
+    def top_dense_score(
+        self, dense: list[float], *, filter_expression: str = ""
+    ) -> float | None:
+        """取稠密路的最高余弦相似度，没有命中时返回 None。
+
+        **拒答判据用的是它，不是融合分。** 余弦相似度有绝对含义（0.6
+        就是 0.6），而融合分经过归一化与加权，数值随权重变化——同一份
+        语料在 0.7/0.3 下给 0.6970、0.5/0.5 下给 0.6407，拿它当阈值
+        没有可比性。
+
+        单独跑一次 limit=1 的检索：hybrid_search 的返回里只有融合分，
+        没有各路的原始分。
+        """
+        self._ensure_loaded()
+        results = self._get_db_client().search(
+            collection_name=self._config.collection,
+            data=[dense],
+            anns_field=MILVUS_DENSE_FIELD,
+            search_params={"metric_type": MILVUS_DENSE_INDEX[1]},
+            limit=1,
+            filter=filter_expression,
+        )
+        if not results or not results[0]:
+            return None
+        return float(results[0][0]["distance"])
 
     def close(self) -> None:
         """释放客户端。从未连接过时调用是安全的。"""

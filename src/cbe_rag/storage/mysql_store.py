@@ -14,7 +14,7 @@ from typing import Any, Callable, Protocol
 import pymysql
 
 from cbe_rag.config.settings import MysqlConfig
-from cbe_rag.ingestion.parser.schema import Chunk
+from cbe_rag.ingestion.parser.schema import Chunk, ChunkLevel
 from cbe_rag.storage.ddl import (
     COUNTRY_SEED,
     DOC_TYPE_SEED,
@@ -149,6 +149,30 @@ _SELECT_ACTIVE_DOCUMENTS = (
     "WHERE status = %s ORDER BY collected_date, doc_id"
 )
 
+# 读出分块时的列顺序，与 _row_to_chunk 一一对应。理由同 _RECORD_COLUMNS：
+# 不用 SELECT *，表加字段后列顺序变了会静默错位。
+_CHUNK_COLUMNS: tuple[str, ...] = (
+    "chunk_id",
+    "doc_id",
+    "parent_id",
+    "level",
+    "chunk_index",
+    "text",
+    "token_count",
+    "start_offset",
+    "end_offset",
+)
+
+_CHUNK_COLUMNS_SQL = ", ".join(_CHUNK_COLUMNS)
+
+# 按主键批量取。占位符个数随 id 数量变化，在方法里现拼。
+_SELECT_CHUNKS_BY_IDS = (
+    "SELECT " + _CHUNK_COLUMNS_SQL + " FROM chunks WHERE chunk_id IN (%s)"
+)
+_SELECT_DOCUMENTS_BY_IDS = (
+    "SELECT " + _RECORD_COLUMNS_SQL + " FROM documents WHERE doc_id IN (%s)"
+)
+
 _DELETE_CHUNKS_BY_DOC = "DELETE FROM chunks WHERE doc_id = %s"
 
 _INSERT_CHUNK = (
@@ -157,6 +181,30 @@ _INSERT_CHUNK = (
     "start_offset, end_offset, created_at"
     ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
+
+
+def _placeholders(count: int) -> str:
+    """拼出 count 个 %s 占位符。
+
+    个数由代码控制（列表长度），值本身仍走参数绑定，不拼进 SQL。
+    """
+    return ", ".join(["%s"] * count)
+
+
+def _row_to_chunk(row: tuple[Any, ...]) -> Chunk:
+    """把查询结果的一行转成 Chunk。"""
+    values = dict(zip(_CHUNK_COLUMNS, row))
+    return Chunk(
+        chunk_id=values["chunk_id"],
+        doc_id=values["doc_id"],
+        parent_id=values["parent_id"],
+        level=ChunkLevel(values["level"]),
+        chunk_index=values["chunk_index"],
+        text=values["text"],
+        token_count=values["token_count"],
+        start_offset=values["start_offset"],
+        end_offset=values["end_offset"],
+    )
 
 
 def _missing_fields_json(record: DocumentRecord) -> str | None:
@@ -576,6 +624,51 @@ class MysqlStore:
         finally:
             _close_quietly(cursor)
             _close_quietly(connection)
+
+    def _fetch_many(
+        self, sql: str, args: tuple[Any, ...]
+    ) -> list[tuple[Any, ...]]:
+        """执行查询并返回所有结果行。
+
+        与 _fetch_document 分开：那个期望 0 到 1 行，这个期望 0 到 N 行，
+        混用会让两边的语义都变模糊。
+        """
+        connection = self._connect()
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            cursor.execute(sql, args)
+            return list(cursor.fetchall())
+        finally:
+            _close_quietly(cursor)
+            _close_quietly(connection)
+
+    def get_chunks(self, chunk_ids: list[str]) -> list[Chunk]:
+        """按 chunk_id 批量取分块，返回顺序不保证。
+
+        检索折叠后要拿父块全文，这里一次查一批。逐条查的话，保留 5 个
+        父块就是 5 次往返，而它们本来就是同一批。
+        """
+        if not chunk_ids:
+            return []
+        rows = self._fetch_many(
+            _SELECT_CHUNKS_BY_IDS % _placeholders(len(chunk_ids)),
+            tuple(chunk_ids),
+        )
+        return [_row_to_chunk(row) for row in rows]
+
+    def get_documents(self, doc_ids: list[str]) -> list[DocumentRecord]:
+        """按 doc_id 批量取文档记录，返回顺序不保证。
+
+        取引用元数据（标题、出处、生效日期）用，一次查一批同理。
+        """
+        if not doc_ids:
+            return []
+        rows = self._fetch_many(
+            _SELECT_DOCUMENTS_BY_IDS % _placeholders(len(doc_ids)),
+            tuple(doc_ids),
+        )
+        return [_row_to_record(row) for row in rows]
 
     def replace_chunks(
         self, doc_id: str, chunks: list[Chunk], *, now: datetime | None = None

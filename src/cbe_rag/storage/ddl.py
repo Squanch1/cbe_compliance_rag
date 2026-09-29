@@ -209,6 +209,14 @@ MILVUS_DENSE_INDEX: tuple[str, str] = ("FLAT", "COSINE")
 MILVUS_SPARSE_INDEX: tuple[str, str] = ("SPARSE_INVERTED_INDEX", "IP")
 MILVUS_SCALAR_INDEX_TYPE = "INVERTED"
 
+# 两路向量的字段名。
+#
+# 稠密那路不在 MILVUS_FIELDS 里——它的维度来自嵌入配置，由调用方传给
+# create_collection。但字段名要固定下来：建集合、建索引、检索时指定
+# anns_field 都要用同一份，分别写死会出现「改了这里不生效」。
+MILVUS_DENSE_FIELD = "dense_vector"
+MILVUS_SPARSE_FIELD = "sparse_vector"
+
 # 集合的字段定义：(字段名, 类型名, 附加参数)
 #
 # **不含 dense_vector**：它的维度必须与嵌入模型一致，属于嵌入配置
@@ -218,7 +226,7 @@ MILVUS_SCALAR_INDEX_TYPE = "INVERTED"
 # 新增字段一律追加在末尾。
 MILVUS_FIELDS: tuple[tuple[str, str, dict[str, object]], ...] = (
     ("chunk_id", "VARCHAR", {"is_primary": True, "max_length": 64}),
-    ("sparse_vector", "SPARSE_FLOAT_VECTOR", {}),
+    (MILVUS_SPARSE_FIELD, "SPARSE_FLOAT_VECTOR", {}),
     ("doc_id", "VARCHAR", {"max_length": 36}),
     ("parent_id", "VARCHAR", {"max_length": 64}),
     ("chunk_index", "INT32", {}),

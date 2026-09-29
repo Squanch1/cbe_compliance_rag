@@ -10,7 +10,7 @@ from cbe_rag.storage.health import HealthResult, StorageAdapter
 from cbe_rag.storage.milvus_store import MilvusStore
 from cbe_rag.storage.mongo_store import MongoStore
 from cbe_rag.storage.mysql_store import MysqlStore
-from cbe_rag.storage.records import ChunkVector, DocumentRecord
+from cbe_rag.storage.records import ChunkVector, DocumentRecord, VectorHit
 from cbe_rag.storage.redis_store import RedisStore
 
 __all__ = [
@@ -25,4 +25,5 @@ __all__ = [
     "MysqlStore",
     "RedisStore",
     "StorageAdapter",
+    "VectorHit",
 ]

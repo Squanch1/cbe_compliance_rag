@@ -22,64 +22,17 @@ from cbe_rag.storage.ddl import (
     MILVUS_SPARSE_INDEX,
 )
 from cbe_rag.storage.milvus_store import MilvusStore
-from cbe_rag.storage.records import ChunkVector
-
-
-def make_config() -> MilvusConfig:
-    return MilvusConfig(
-        host="192.168.88.101",
-        port=19530,
-        database="cbe_compliance",
-        collection="cbe_chunks_v1",
-    )
-
-
-class FakeMilvusClient:
-    """假的 MilvusClient。
-
-    多种失败分开注入，因为它们对应不同的排查方向。
-    """
-
-    def __init__(
-        self,
-        *,
-        fail_with: Exception | None = None,
-        list_fail_with: Exception | None = None,
-        version: str = "2.6.6",
-        databases: list[str] | None = None,
-    ) -> None:
-        self._fail_with = fail_with
-        self._list_fail_with = list_fail_with
-        self._version = version
-        self._databases = ["default"] if databases is None else databases
-        self.closed = False
-
-    def get_server_version(self) -> str:
-        if self._fail_with is not None:
-            raise self._fail_with
-        return self._version
-
-    def list_databases(self) -> list[str]:
-        if self._fail_with is not None:
-            raise self._fail_with
-        if self._list_fail_with is not None:
-            raise self._list_fail_with
-        return list(self._databases)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def connect_error(message: str) -> MilvusException:
-    """构造一个模拟连接失败的异常。"""
-    return MilvusException(message=message)
-
-
-def build_store(**client_kwargs: object) -> tuple[MilvusStore, FakeMilvusClient]:
-    """构造适配器并返回它使用的假客户端，便于断言。"""
-    client = FakeMilvusClient(**client_kwargs)  # type: ignore[arg-type]
-    store = MilvusStore(make_config(), client_factory=lambda: client)
-    return store, client
+from milvus_fakes import (
+    FakeIndexParams,
+    FakeMilvusClient,
+    FakeSchema,
+    build_db_store,
+    build_store,
+    connect_error,
+    make_config,
+    make_query_row,
+    make_vector,
+)
 
 
 class TestClientCreation:
@@ -213,132 +166,6 @@ class TestHealthResultRendering:
         store, _ = build_store(fail_with=connect_error("refused"))
 
         assert store.health_check().render().startswith("[FAIL]")
-
-
-class FakeSchema:
-    """假的 schema 构造器，记录加进来的字段。"""
-
-    def __init__(self, **kwargs: object) -> None:
-        self.kwargs = kwargs
-        self.fields: list[tuple[str, object, dict[str, object]]] = []
-
-    def add_field(self, name: str, data_type: object, **params: object) -> None:
-        self.fields.append((name, data_type, params))
-
-
-class FakeIndexParams:
-    """假的索引参数构造器，记录加进来的索引。"""
-
-    def __init__(self) -> None:
-        self.indexes: list[tuple[str, str | None, str | None]] = []
-
-    def add_index(
-        self,
-        field_name: str,
-        index_type: str | None = None,
-        metric_type: str | None = None,
-    ) -> None:
-        self.indexes.append((field_name, index_type, metric_type))
-
-
-class FakeMilvusDbClient:
-    """假的、连接到业务库的客户端。"""
-
-    def __init__(
-        self,
-        collections: tuple[str, ...] = (),
-        query_rows: tuple[dict[str, object], ...] = (),
-        write_fail_with: Exception | None = None,
-        load_state: LoadState = LoadState.NotLoad,
-    ) -> None:
-        self._collections = list(collections)
-        self._query_rows = list(query_rows)
-        self._write_fail_with = write_fail_with
-        self._load_state = load_state
-        self.created: list[tuple[str, FakeSchema]] = []
-        self.indexed: list[tuple[str, FakeIndexParams]] = []
-        self.schema_kwargs: dict[str, object] = {}
-        self.upserted: list[list[dict[str, object]]] = []
-        self.deleted: list[tuple[str, str]] = []
-        self.queried: list[tuple[str, str, list[str]]] = []
-        self.load_states_asked: list[str] = []
-        self.loaded: list[str] = []
-        self.closed = False
-
-    def list_collections(self) -> list[str]:
-        return list(self._collections)
-
-    def create_schema(self, **kwargs: object) -> FakeSchema:
-        self.schema_kwargs = kwargs
-        return FakeSchema(**kwargs)
-
-    def prepare_index_params(self) -> FakeIndexParams:
-        return FakeIndexParams()
-
-    def create_collection(self, collection_name: str, **kwargs: object) -> None:
-        self.created.append((collection_name, kwargs["schema"]))  # type: ignore[arg-type]
-
-    def create_index(self, collection_name: str, **kwargs: object) -> None:
-        self.indexed.append((collection_name, kwargs["index_params"]))  # type: ignore[arg-type]
-
-    def get_load_state(self, collection_name: str, **kwargs: object) -> dict[str, object]:
-        self.load_states_asked.append(collection_name)
-        return {"state": self._load_state}
-
-    def load_collection(self, collection_name: str, **kwargs: object) -> None:
-        self.loaded.append(collection_name)
-        self._load_state = LoadState.Loaded
-
-    def upsert(
-        self, collection_name: str, data: list[dict[str, object]], **kwargs: object
-    ) -> dict[str, int]:
-        if self._write_fail_with is not None:
-            raise self._write_fail_with
-        self.upserted.append(list(data))
-        return {"upsert_count": len(data)}
-
-    def delete(
-        self, collection_name: str, filter: str = "", **kwargs: object
-    ) -> dict[str, int]:
-        if self._write_fail_with is not None:
-            raise self._write_fail_with
-        self.deleted.append((collection_name, filter))
-        return {"delete_count": 0}
-
-    def query(
-        self,
-        collection_name: str,
-        filter: str = "",
-        output_fields: list[str] | None = None,
-        **kwargs: object,
-    ) -> list[dict[str, object]]:
-        self.queried.append((collection_name, filter, list(output_fields or [])))
-        return [dict(row) for row in self._query_rows]
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def build_db_store(
-    collections: tuple[str, ...] = (),
-    query_rows: tuple[dict[str, object], ...] = (),
-    write_fail_with: Exception | None = None,
-    load_state: LoadState = LoadState.NotLoad,
-) -> tuple[MilvusStore, FakeMilvusDbClient, FakeMilvusClient]:
-    """构造注入了「库客户端」与「普通客户端」的适配器。
-
-    两个客户端分开注入，才能验证集合操作走的是哪一个。
-    """
-    db_client = FakeMilvusDbClient(
-        collections, query_rows, write_fail_with, load_state
-    )
-    plain_client = FakeMilvusClient()
-    store = MilvusStore(
-        make_config(),
-        client_factory=lambda: plain_client,
-        db_client_factory=lambda: db_client,
-    )
-    return store, db_client, plain_client
 
 
 class TestCreateCollection:
@@ -496,37 +323,6 @@ class TestCloseReleasesBothClients:
         store.close()
 
         assert plain_client.closed is False
-
-
-def make_vector(**overrides: Any) -> ChunkVector:
-    """造一条待写入的子块向量。"""
-    fields: dict[str, Any] = {
-        "chunk_id": "doc-1_c0000",
-        "doc_id": "doc-1",
-        "parent_id": "doc-1_p0000",
-        "chunk_index": 0,
-        "country": "EU",
-        "doc_type": "faq",
-        "publisher": "amazon",
-        "dense": [0.1, 0.2],
-        "sparse": {7: 0.5, 42: 0.25},
-    }
-    fields.update(overrides)
-    return ChunkVector(**fields)
-
-
-def make_query_row(**overrides: Any) -> dict[str, Any]:
-    """造一行 Milvus 查询结果，含两路向量。"""
-    row: dict[str, Any] = {
-        "chunk_id": "doc-1_c0000",
-        "doc_id": "doc-1",
-        "parent_id": "doc-1_p0000",
-        "chunk_index": 0,
-        "dense_vector": [0.1, 0.2],
-        "sparse_vector": {7: 0.5},
-    }
-    row.update(overrides)
-    return row
 
 
 class TestCollectionLoading:

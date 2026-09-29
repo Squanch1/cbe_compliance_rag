@@ -43,6 +43,20 @@ class DocumentRecord:
 
 
 @dataclass(frozen=True)
+class VectorHit:
+    """向量检索的一条命中。
+
+    score 是两路融合后的分数。各路的原始分不在这里——量纲不同（同一个
+    问题下稠密 0.5867、稀疏 0.0786），放在一起很容易被拿去比较或当阈值。
+    需要用原始分的地方（拒答判据）单独取，见 MilvusStore.top_dense_score。
+    """
+
+    chunk_id: str
+    doc_id: str
+    score: float
+
+
+@dataclass(frozen=True)
 class ChunkVector:
     """一条待写入 Milvus 的子块记录。
 

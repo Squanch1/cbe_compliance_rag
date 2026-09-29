@@ -16,7 +16,11 @@ import pytest
 from pymysql.err import MySQLError
 
 from cbe_rag.storage.ddl import DocumentStatus
-from cbe_rag.storage.mysql_store import _RECORD_COLUMNS, MysqlStore
+from cbe_rag.storage.mysql_store import (
+    _CHUNK_COLUMNS,
+    _RECORD_COLUMNS,
+    MysqlStore,
+)
 from mysql_fakes import (
     _RECORD_VALUES,
     FakeConnector,
@@ -574,3 +578,172 @@ class TestReplaceChunks:
         _, rows = connector.last.cursor_obj.executed_many[0]
 
         assert rows[0][-1] == moment
+
+
+_CHUNK_VALUES: dict[str, Any] = {
+    "chunk_id": "doc-1_p0000",
+    "doc_id": "doc-1",
+    "parent_id": None,
+    "level": "parent",
+    "chunk_index": 0,
+    "text": "进口一站式服务适用于价值不超过 150 欧元的货物。",
+    "token_count": 20,
+    "start_offset": None,
+    "end_offset": None,
+}
+
+
+def make_chunk_row(**overrides: Any) -> tuple[Any, ...]:
+    """造一行分块查询结果，按 _CHUNK_COLUMNS 的顺序排列。
+
+    默认造的是父块（没有 parent_id 与偏移）；子块要自己覆盖那三项。
+    """
+    values = {**_CHUNK_VALUES, **overrides}
+    return tuple(values[name] for name in _CHUNK_COLUMNS)
+
+
+class TestGetChunks:
+    def test_returns_chunks(self) -> None:
+        connector = FakeConnector(rows=(make_chunk_row(),))
+        store = MysqlStore(make_config(), connect=connector)
+
+        chunks = store.get_chunks(["doc-1_p0000"])
+
+        assert len(chunks) == 1
+        assert chunks[0].chunk_id == "doc-1_p0000"
+        assert chunks[0].text == _CHUNK_VALUES["text"]
+
+    def test_returns_empty_list_for_empty_input(self) -> None:
+        # IN () 是语法错误，空列表必须提前返回，连连接都不该建
+        connector = FakeConnector()
+        store = MysqlStore(make_config(), connect=connector)
+
+        assert store.get_chunks([]) == []
+        assert connector.connections == []
+
+    def test_uses_one_statement_for_the_whole_batch(self) -> None:
+        # 逐条查的话，保留 5 个父块就是 5 次往返，而它们本来就是同一批
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.get_chunks(["a", "b", "c"])
+
+        assert len(connector.last.cursor_obj.executed) == 1
+
+    def test_placeholders_match_the_id_count(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.get_chunks(["a", "b", "c"])
+
+        cursor = connector.last.cursor_obj
+        assert cursor.executed[0].count("%s") == 3
+        assert cursor.executed_args[0] == ("a", "b", "c")
+
+    def test_ids_are_bound_not_interpolated(self) -> None:
+        # 拼进 SQL 既是注入面，也让驱动没法复用预编译语句
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.get_chunks(["x' OR '1'='1"])
+
+        assert "OR" not in connector.last.cursor_obj.executed[0]
+
+    def test_parent_chunk_keeps_a_null_parent_id(self) -> None:
+        # 父块没有 parent_id，转成 Chunk 时不能变成空字符串
+        connector = FakeConnector(rows=(make_chunk_row(),))
+        store = MysqlStore(make_config(), connect=connector)
+
+        assert store.get_chunks(["doc-1_p0000"])[0].parent_id is None
+
+    def test_child_chunk_keeps_its_offsets(self) -> None:
+        connector = FakeConnector(
+            rows=(
+                make_chunk_row(
+                    chunk_id="doc-1_c0000",
+                    parent_id="doc-1_p0000",
+                    level="child",
+                    start_offset=0,
+                    end_offset=25,
+                ),
+            )
+        )
+        store = MysqlStore(make_config(), connect=connector)
+
+        chunk = store.get_chunks(["doc-1_c0000"])[0]
+
+        assert chunk.parent_id == "doc-1_p0000"
+        assert chunk.start_offset == 0
+        assert chunk.end_offset == 25
+
+    def test_closes_resources(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.get_chunks(["a"])
+
+        assert connector.last.cursor_obj.closed is True
+        assert connector.last.closed is True
+
+    def test_closes_resources_even_on_failure(self) -> None:
+        connector = FakeConnector(query_fail_with=MySQLError("表不存在"))
+        store = MysqlStore(make_config(), connect=connector)
+
+        with pytest.raises(MySQLError):
+            store.get_chunks(["a"])
+
+        assert connector.last.closed is True
+
+
+class TestGetDocuments:
+    def test_returns_records(self) -> None:
+        connector = FakeConnector(rows=(make_row(),))
+        store = MysqlStore(make_config(), connect=connector)
+
+        records = store.get_documents(["doc-1"])
+
+        assert len(records) == 1
+        assert records[0].doc_id == "doc-1"
+        assert records[0].title == _RECORD_VALUES["title"]
+
+    def test_returns_empty_list_for_empty_input(self) -> None:
+        connector = FakeConnector()
+        store = MysqlStore(make_config(), connect=connector)
+
+        assert store.get_documents([]) == []
+        assert connector.connections == []
+
+    def test_uses_one_statement_for_the_whole_batch(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.get_documents(["a", "b"])
+
+        assert len(connector.last.cursor_obj.executed) == 1
+
+    def test_placeholders_match_the_id_count(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.get_documents(["a", "b"])
+
+        cursor = connector.last.cursor_obj
+        assert cursor.executed[0].count("%s") == 2
+        assert cursor.executed_args[0] == ("a", "b")
+
+    def test_does_not_select_star(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.get_documents(["a"])
+
+        assert "*" not in connector.last.cursor_obj.executed[0]
+
+    def test_closes_resources(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.get_documents(["a"])
+
+        assert connector.last.cursor_obj.closed is True
+        assert connector.last.closed is True
