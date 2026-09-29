@@ -15,6 +15,7 @@ import time
 from typing import Any, Callable, Protocol
 
 from pymilvus import DataType, MilvusClient
+from pymilvus.client.types import LoadState
 
 from cbe_rag.config.settings import MilvusConfig
 from cbe_rag.storage.ddl import (
@@ -56,6 +57,12 @@ class MilvusClientProtocol(Protocol):
         ...
 
     def create_index(self, collection_name: str, **kwargs: Any) -> Any:
+        ...
+
+    def load_collection(self, collection_name: str, **kwargs: Any) -> Any:
+        ...
+
+    def get_load_state(self, collection_name: str, **kwargs: Any) -> dict[str, Any]:
         ...
 
     def upsert(
@@ -138,6 +145,8 @@ class MilvusStore:
         )
         self._client: MilvusClientProtocol | None = None
         self._db_client: MilvusClientProtocol | None = None
+        # 集合是否已确认加载到内存，见 _ensure_loaded
+        self._loaded = False
 
     def _connect_by_config(self) -> MilvusClientProtocol:
         """按配置建立真实客户端。
@@ -174,6 +183,23 @@ class MilvusStore:
         if self._db_client is None:
             self._db_client = self._db_client_factory()
         return self._db_client
+
+    def _ensure_loaded(self) -> None:
+        """确保集合已加载到内存。
+
+        **建好集合与索引还不够。** delete 与 query 在未加载的集合上会直接
+        报 `collection not loaded`，而 upsert 不需要加载——所以漏掉这一步
+        时的症状很怪：向量写进去了，删的时候才炸，还在库里留下脏数据。
+
+        带实例级缓存，只查一次状态。
+        """
+        if self._loaded:
+            return
+        client = self._get_db_client()
+        state = client.get_load_state(self._config.collection)
+        if state.get("state") != LoadState.Loaded:
+            client.load_collection(self._config.collection)
+        self._loaded = True
 
     def health_check(self) -> HealthResult:
         """探测 Milvus 连通性，并报告业务库是否已创建。
@@ -257,6 +283,9 @@ class MilvusStore:
                 field_name=field_name, index_type=MILVUS_SCALAR_INDEX_TYPE
             )
         client.create_index(self._config.collection, index_params=index_params)
+        # 建完还要加载到内存，否则 delete 与 query 用不了，理由见 _ensure_loaded
+        client.load_collection(self._config.collection)
+        self._loaded = True
 
         return True
 
@@ -273,6 +302,7 @@ class MilvusStore:
         if not vectors:
             return 0
 
+        self._ensure_loaded()
         rows = [
             {
                 "chunk_id": vector.chunk_id,
@@ -297,6 +327,7 @@ class MilvusStore:
 
         重跑这份文档前调用，理由见 upsert_chunks。
         """
+        self._ensure_loaded()
         self._get_db_client().delete(
             collection_name=self._config.collection,
             filter=_doc_id_filter(doc_id),
@@ -314,6 +345,7 @@ class MilvusStore:
         代价是一次读加一次写。只发生在「内容没变但清单上的元数据改了」
         这一种情况下，且同一文档的子块数量有限，可以接受。
         """
+        self._ensure_loaded()
         client = self._get_db_client()
         rows = client.query(
             collection_name=self._config.collection,

@@ -11,6 +11,7 @@ import pytest
 from pymilvus.exceptions import MilvusException
 
 from pymilvus import DataType
+from pymilvus.client.types import LoadState
 
 from cbe_rag.config.settings import MilvusConfig
 from cbe_rag.storage.ddl import (
@@ -248,16 +249,20 @@ class FakeMilvusDbClient:
         collections: tuple[str, ...] = (),
         query_rows: tuple[dict[str, object], ...] = (),
         write_fail_with: Exception | None = None,
+        load_state: LoadState = LoadState.NotLoad,
     ) -> None:
         self._collections = list(collections)
         self._query_rows = list(query_rows)
         self._write_fail_with = write_fail_with
+        self._load_state = load_state
         self.created: list[tuple[str, FakeSchema]] = []
         self.indexed: list[tuple[str, FakeIndexParams]] = []
         self.schema_kwargs: dict[str, object] = {}
         self.upserted: list[list[dict[str, object]]] = []
         self.deleted: list[tuple[str, str]] = []
         self.queried: list[tuple[str, str, list[str]]] = []
+        self.load_states_asked: list[str] = []
+        self.loaded: list[str] = []
         self.closed = False
 
     def list_collections(self) -> list[str]:
@@ -275,6 +280,14 @@ class FakeMilvusDbClient:
 
     def create_index(self, collection_name: str, **kwargs: object) -> None:
         self.indexed.append((collection_name, kwargs["index_params"]))  # type: ignore[arg-type]
+
+    def get_load_state(self, collection_name: str, **kwargs: object) -> dict[str, object]:
+        self.load_states_asked.append(collection_name)
+        return {"state": self._load_state}
+
+    def load_collection(self, collection_name: str, **kwargs: object) -> None:
+        self.loaded.append(collection_name)
+        self._load_state = LoadState.Loaded
 
     def upsert(
         self, collection_name: str, data: list[dict[str, object]], **kwargs: object
@@ -310,12 +323,15 @@ def build_db_store(
     collections: tuple[str, ...] = (),
     query_rows: tuple[dict[str, object], ...] = (),
     write_fail_with: Exception | None = None,
+    load_state: LoadState = LoadState.NotLoad,
 ) -> tuple[MilvusStore, FakeMilvusDbClient, FakeMilvusClient]:
     """构造注入了「库客户端」与「普通客户端」的适配器。
 
     两个客户端分开注入，才能验证集合操作走的是哪一个。
     """
-    db_client = FakeMilvusDbClient(collections, query_rows, write_fail_with)
+    db_client = FakeMilvusDbClient(
+        collections, query_rows, write_fail_with, load_state
+    )
     plain_client = FakeMilvusClient()
     store = MilvusStore(
         make_config(),
@@ -511,6 +527,69 @@ def make_query_row(**overrides: Any) -> dict[str, Any]:
     }
     row.update(overrides)
     return row
+
+
+class TestCollectionLoading:
+    def test_upsert_loads_the_collection_first(self) -> None:
+        # 未加载的集合上 delete 与 query 会报 collection not loaded，
+        # 而 upsert 不会——不加载的话症状是「写进去了，删的时候才炸」
+        store, db_client, _ = build_db_store(load_state=LoadState.NotLoad)
+
+        store.upsert_chunks([make_vector()])
+
+        assert db_client.loaded
+
+    def test_already_loaded_collection_is_not_loaded_again(self) -> None:
+        # 已加载就别再加载一次，那是白跑的 RPC
+        store, db_client, _ = build_db_store(load_state=LoadState.Loaded)
+
+        store.upsert_chunks([make_vector()])
+
+        assert db_client.loaded == []
+
+    def test_load_state_is_asked_only_once(self) -> None:
+        # 每次写都查一遍状态同样多余
+        store, db_client, _ = build_db_store()
+
+        store.upsert_chunks([make_vector()])
+        store.delete_by_doc("doc-1")
+        store.update_scalar_fields(
+            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+        )
+
+        assert len(db_client.load_states_asked) == 1
+
+    def test_delete_also_ensures_loading(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.delete_by_doc("doc-1")
+
+        assert db_client.loaded
+
+    def test_scalar_update_also_ensures_loading(self) -> None:
+        store, db_client, _ = build_db_store(query_rows=(make_query_row(),))
+
+        store.update_scalar_fields(
+            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+        )
+
+        assert db_client.loaded
+
+    def test_creating_a_collection_loads_it(self) -> None:
+        # 建完就加载，别等下一个人来用的时候才发现用不了
+        store, db_client, _ = build_db_store(collections=())
+
+        store.create_collection(dense_dim=1024)
+
+        assert db_client.loaded == ["cbe_chunks_v1"]
+
+    def test_empty_upsert_does_not_load(self) -> None:
+        # 空列表什么都不发，也就不必加载
+        store, db_client, _ = build_db_store()
+
+        store.upsert_chunks([])
+
+        assert db_client.load_states_asked == []
 
 
 class TestUpsertChunks:
