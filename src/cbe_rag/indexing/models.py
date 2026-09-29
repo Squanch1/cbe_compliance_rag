@@ -21,9 +21,12 @@ from cbe_rag.storage.records import ExistingDocument
 class ImportAction(str, Enum):
     """判重得出的动作。"""
 
-    # 没见过这份文件，走完整的解析与索引
+    # 没见过这份文件，走完整的解析与索引，生成新的 doc_id
     NEW = "new"
-    # 内容见过，但清单上的元数据变了（如补上了 publisher），只改属性
+    # 内容见过，但库里那条没走完（元数据不齐、解析各层不合格、中途出错、
+    # 或被新版本取代过），复用它的 doc_id 重跑一遍
+    REINDEX = "reindex"
+    # 内容见过且已入库，但清单上的元数据变了（如补上了 publisher），只改属性
     UPDATE_META = "update_meta"
     # 内容与元数据都一致，什么都不做
     SKIP = "skip"

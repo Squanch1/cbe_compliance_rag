@@ -4,6 +4,7 @@
 service.import_documents。
 """
 
+from cbe_rag.indexing.decision import decide
 from cbe_rag.indexing.hashing import HashingError, file_content_hash
 from cbe_rag.indexing.models import (
     Decision,
@@ -20,5 +21,6 @@ __all__ = [
     "ImportAction",
     "ImportReport",
     "count_by_action",
+    "decide",
     "file_content_hash",
 ]

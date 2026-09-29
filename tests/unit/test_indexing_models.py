@@ -136,6 +136,6 @@ class TestImportAction:
         # 值会进日志与报告，用字符串而非数字，读日志时不必回查定义
         assert ImportAction.SUPERSEDE_AND_NEW == "supersede_and_new"
 
-    def test_four_actions_are_defined(self) -> None:
-        # 判重只产出这四种动作，多一种意味着 decision.py 漏了分支
-        assert len(ImportAction) == 4
+    def test_five_actions_are_defined(self) -> None:
+        # 判重只产出这五种动作，多一种意味着 decision.py 漏了分支
+        assert len(ImportAction) == 5
