@@ -13,6 +13,7 @@ from cbe_rag.indexing.models import (
     ImportReport,
     count_by_action,
 )
+from cbe_rag.indexing.pipeline import PreparedDocument, prepare_document
 
 __all__ = [
     "Decision",
@@ -20,7 +21,9 @@ __all__ = [
     "HashingError",
     "ImportAction",
     "ImportReport",
+    "PreparedDocument",
     "count_by_action",
     "decide",
     "file_content_hash",
+    "prepare_document",
 ]
