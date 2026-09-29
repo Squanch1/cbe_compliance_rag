@@ -33,7 +33,7 @@ def make_parent(**overrides: Any) -> RetrievedParent:
         "title": "欧洲增值税常见问题",
         "source_url": "https://sellercentral.amazon.com/help/hub/reference/GDZ8RCTRUZEH4PBX",
         "country": "EU",
-        "doc_type": "faq",
+        "doc_type": "policy",
         "publisher": "amazon",
         "effective_date": None,
     }
@@ -80,7 +80,7 @@ class TestBuildContext:
 
         assert "amazon" in context
         assert "EU" in context
-        assert "faq" in context
+        assert "policy" in context
 
     def test_carries_the_source_url(self) -> None:
         # 引用要能回溯到原文

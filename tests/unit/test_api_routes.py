@@ -355,7 +355,7 @@ class TestDimensions:
         body = build_client().get("/api/v1/dimensions").json()
 
         assert body["countries"][0]["name_zh"] == "欧盟"
-        assert body["doc_types"][0]["name_zh"] == "常见问题"
+        assert body["doc_types"][0]["name_zh"] == "平台政策"
         assert body["publishers"][0]["name_zh"] == "亚马逊"
 
 

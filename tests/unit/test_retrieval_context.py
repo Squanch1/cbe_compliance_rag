@@ -37,7 +37,7 @@ class TestLoadParents:
         assert parents[0].title == "欧洲增值税常见问题"
         assert parents[0].source_url is not None
         assert parents[0].country == "EU"
-        assert parents[0].doc_type == "faq"
+        assert parents[0].doc_type == "policy"
 
     def test_carries_the_score(self) -> None:
         # 分数是折叠时算的，恢复父块不该把它弄丢

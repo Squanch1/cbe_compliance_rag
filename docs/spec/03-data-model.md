@@ -226,7 +226,7 @@ CREATE TABLE dim_country (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='国家维度';
 
 CREATE TABLE dim_doc_type (
-    code      VARCHAR(32) NOT NULL COMMENT 'guideline/regulation/policy/faq',
+    code      VARCHAR(32) NOT NULL COMMENT 'guideline/regulation/policy',
     name_zh   VARCHAR(64) NOT NULL,
     name_en   VARCHAR(64) NOT NULL,
     is_active TINYINT(1)  NOT NULL DEFAULT 1,

@@ -27,7 +27,7 @@ def make_parent(number: int, **overrides: Any) -> RetrievedParent:
         "title": "材料 %d" % number,
         "source_url": "https://example.org/%d" % number,
         "country": "EU",
-        "doc_type": "faq",
+        "doc_type": "policy",
         "publisher": "amazon",
         "effective_date": date(2021, 7, 1),
     }

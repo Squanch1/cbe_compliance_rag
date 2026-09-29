@@ -88,7 +88,7 @@ def make_document(raw_path: Path, **overrides: Any) -> CollectedDocument:
         "source_url": SOURCE_URL,
         "publisher": "amazon",
         "country": "EU",
-        "doc_type": "faq",
+        "doc_type": "policy",
         "effective_date": None,
         "platform": "amazon",
     }
@@ -107,7 +107,7 @@ def make_record(content_hash: str, **overrides: Any) -> DocumentRecord:
         "source_url": SOURCE_URL,
         "publisher": "amazon",
         "country": "EU",
-        "doc_type": "faq",
+        "doc_type": "policy",
         "effective_date": None,
         "collected_date": TODAY,
         "raw_path": "C:/data/raw/amazon-eu-vat-faq.html",
@@ -134,14 +134,18 @@ def make_child(**overrides: Any) -> Chunk:
 
 
 def manifest_row(file_name: str, **overrides: str) -> dict[str, str]:
-    """造清单里的一行，列名与 manifest.py 的定义对齐。"""
+    """造清单里的一行，列名与 manifest.py 的定义对齐。
+
+    doc_type 用 policy 而不是 faq：后者已经不在允许取值里了——
+    文档类型判的是材料的权威性，不是内容组织形式。
+    """
     row = {
         "file_name": file_name,
         "title": "欧洲增值税常见问题",
         "source_url": SOURCE_URL,
         "publisher": "amazon",
         "country": "EU",
-        "doc_type": "faq",
+        "doc_type": "policy",
         "effective_date": "",
         "platform": "amazon",
         "notes": "",

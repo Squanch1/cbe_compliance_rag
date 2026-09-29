@@ -64,7 +64,7 @@ def make_document(**overrides: Any) -> DocumentRecord:
         "source_url": "https://sellercentral.amazon.com/help/hub/reference/GDZ8RCTRUZEH4PBX",
         "publisher": "amazon",
         "country": "EU",
-        "doc_type": "faq",
+        "doc_type": "policy",
         "effective_date": None,
         "collected_date": TODAY,
         "raw_path": "C:/data/raw/a.html",
@@ -115,7 +115,9 @@ class FakeMysql:
             countries=[
                 Dimension(code="EU", name_zh="欧盟", name_en="European Union")
             ],
-            doc_types=[Dimension(code="faq", name_zh="常见问题", name_en="FAQ")],
+            doc_types=[
+                Dimension(code="policy", name_zh="平台政策", name_en="Policy")
+            ],
             publishers=[
                 Dimension(code="amazon", name_zh="亚马逊", name_en="Amazon")
             ],

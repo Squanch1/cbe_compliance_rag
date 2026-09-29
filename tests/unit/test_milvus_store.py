@@ -350,7 +350,7 @@ class TestCollectionLoading:
         store.upsert_chunks([make_vector()])
         store.delete_by_doc("doc-1")
         store.update_scalar_fields(
-            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+            "doc-1", country="EU", doc_type="policy", publisher="amazon"
         )
 
         assert len(db_client.load_states_asked) == 1
@@ -366,7 +366,7 @@ class TestCollectionLoading:
         store, db_client, _ = build_db_store(query_rows=(make_query_row(),))
 
         store.update_scalar_fields(
-            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+            "doc-1", country="EU", doc_type="policy", publisher="amazon"
         )
 
         assert db_client.loaded
@@ -400,7 +400,7 @@ class TestUpsertChunks:
         assert row["parent_id"] == "doc-1_p0000"
         assert row["chunk_index"] == 0
         assert row["country"] == "EU"
-        assert row["doc_type"] == "faq"
+        assert row["doc_type"] == "policy"
         assert row["publisher"] == "amazon"
         assert row["dense_vector"] == [0.1, 0.2]
         assert row["sparse_vector"] == {7: 0.5, 42: 0.25}
@@ -475,7 +475,7 @@ class TestUpdateScalarFields:
         store, db_client, _ = build_db_store(query_rows=())
 
         count = store.update_scalar_fields(
-            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+            "doc-1", country="EU", doc_type="policy", publisher="amazon"
         )
 
         assert count == 0
@@ -511,7 +511,7 @@ class TestUpdateScalarFields:
         store, db_client, _ = build_db_store(query_rows=())
 
         store.update_scalar_fields(
-            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+            "doc-1", country="EU", doc_type="policy", publisher="amazon"
         )
         _, _, output_fields = db_client.queried[0]
 
@@ -524,7 +524,7 @@ class TestUpdateScalarFields:
         )
 
         count = store.update_scalar_fields(
-            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+            "doc-1", country="EU", doc_type="policy", publisher="amazon"
         )
 
         assert count == 2
@@ -534,7 +534,7 @@ class TestUpdateScalarFields:
 
         with pytest.raises(ValueError, match="非法字符"):
             store.update_scalar_fields(
-                'doc" or doc_id != "', country="EU", doc_type="faq", publisher="amazon"
+                'doc" or doc_id != "', country="EU", doc_type="policy", publisher="amazon"
             )
 
         assert db_client.queried == []

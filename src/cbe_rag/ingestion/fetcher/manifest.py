@@ -40,8 +40,10 @@ REQUIRED_COLUMNS: tuple[str, ...] = tuple(
 ALLOWED_COUNTRIES: frozenset[str] = frozenset(
     {"EU", "DE", "FR", "IT", "ES", "NL", "PL"}
 )
+# 不含 faq：文档类型判的是材料的权威性与来源性质，不是内容的组织形式。
+# 问答体另有一套（FAQ 直出），不进这个维度。
 ALLOWED_DOC_TYPES: frozenset[str] = frozenset(
-    {"guideline", "regulation", "policy", "faq"}
+    {"guideline", "regulation", "policy"}
 )
 ALLOWED_PUBLISHERS: frozenset[str] = frozenset({"amazon", "eu_commission"})
 ALLOWED_PLATFORMS: frozenset[str] = frozenset({"amazon"})

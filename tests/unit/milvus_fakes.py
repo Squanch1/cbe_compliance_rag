@@ -267,7 +267,7 @@ def make_vector(**overrides: Any) -> ChunkVector:
         "parent_id": "doc-1_p0000",
         "chunk_index": 0,
         "country": "EU",
-        "doc_type": "faq",
+        "doc_type": "policy",
         "publisher": "amazon",
         "dense": [0.1, 0.2],
         "sparse": {7: 0.5, 42: 0.25},

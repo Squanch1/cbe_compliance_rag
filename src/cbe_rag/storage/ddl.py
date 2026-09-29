@@ -102,7 +102,7 @@ MYSQL_TABLES: tuple[tuple[str, str], ...] = (
         "dim_doc_type",
         """
         CREATE TABLE IF NOT EXISTS dim_doc_type (
-            code      VARCHAR(32) NOT NULL COMMENT 'guideline/regulation/policy/faq',
+            code      VARCHAR(32) NOT NULL COMMENT 'guideline/regulation/policy',
             name_zh   VARCHAR(64) NOT NULL,
             name_en   VARCHAR(64) NOT NULL,
             is_active TINYINT(1)  NOT NULL DEFAULT 1,
@@ -159,11 +159,16 @@ COUNTRY_SEED: tuple[tuple[str, str, str, bool], ...] = (
     ("CZ", "捷克", "Czechia", False),
 )
 
+# 文档类型判的是**材料的权威性与来源性质**，不是内容的组织形式。
+#
+# 「常见问题」曾经占一个取值，已经去掉：一份欧盟官方的问答和一个卖家论坛
+# 的问答不是一类东西，而同一份文档里也可能既有正文又有问答（欧盟那份指南
+# 里就有 Q&A 章节）——「是不是问答」是段落级的属性，挂在文档类型上从一开始
+# 就不对。问答对另走一套（见 docs/spec/04-api-contract.md 的 FAQ 直出）。
 DOC_TYPE_SEED: tuple[tuple[str, str, str, bool], ...] = (
     ("guideline", "官方指南", "Guideline", True),
     ("regulation", "法规条文", "Regulation", True),
     ("policy", "平台政策", "Policy", True),
-    ("faq", "常见问题", "FAQ", True),
 )
 
 # 发布机构：(代码, 中文名, 英文名, 官方站点, 是否首期启用)

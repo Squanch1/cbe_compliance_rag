@@ -222,7 +222,7 @@ class TestRegisterDocument:
         assert record.source_url == SOURCE_URL
         assert record.publisher == "amazon"
         assert record.country == "EU"
-        assert record.doc_type == "faq"
+        assert record.doc_type == "policy"
         assert record.platform == "amazon"
 
     def test_raw_path_is_stored_as_a_string(self, tmp_path: Path) -> None:
@@ -423,7 +423,7 @@ class TestSuccessfulIndex:
         vector = context.milvus.upserted[0][0]
 
         assert vector.country == "EU"
-        assert vector.doc_type == "faq"
+        assert vector.doc_type == "policy"
         assert vector.publisher == "amazon"
 
     def test_child_vectors_point_back_at_a_parent_that_exists(
@@ -624,7 +624,7 @@ class TestUpdateMetaThroughIndexDocument:
             {
                 "doc_id": "doc-1",
                 "country": "EU",
-                "doc_type": "faq",
+                "doc_type": "policy",
                 "publisher": "eu_commission",
             }
         ]
