@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
 from pymilvus.exceptions import MilvusException
 
 from pymilvus import DataType
@@ -18,6 +21,7 @@ from cbe_rag.storage.ddl import (
     MILVUS_SPARSE_INDEX,
 )
 from cbe_rag.storage.milvus_store import MilvusStore
+from cbe_rag.storage.records import ChunkVector
 
 
 def make_config() -> MilvusConfig:
@@ -239,11 +243,21 @@ class FakeIndexParams:
 class FakeMilvusDbClient:
     """假的、连接到业务库的客户端。"""
 
-    def __init__(self, collections: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        collections: tuple[str, ...] = (),
+        query_rows: tuple[dict[str, object], ...] = (),
+        write_fail_with: Exception | None = None,
+    ) -> None:
         self._collections = list(collections)
+        self._query_rows = list(query_rows)
+        self._write_fail_with = write_fail_with
         self.created: list[tuple[str, FakeSchema]] = []
         self.indexed: list[tuple[str, FakeIndexParams]] = []
         self.schema_kwargs: dict[str, object] = {}
+        self.upserted: list[list[dict[str, object]]] = []
+        self.deleted: list[tuple[str, str]] = []
+        self.queried: list[tuple[str, str, list[str]]] = []
         self.closed = False
 
     def list_collections(self) -> list[str]:
@@ -262,18 +276,46 @@ class FakeMilvusDbClient:
     def create_index(self, collection_name: str, **kwargs: object) -> None:
         self.indexed.append((collection_name, kwargs["index_params"]))  # type: ignore[arg-type]
 
+    def upsert(
+        self, collection_name: str, data: list[dict[str, object]], **kwargs: object
+    ) -> dict[str, int]:
+        if self._write_fail_with is not None:
+            raise self._write_fail_with
+        self.upserted.append(list(data))
+        return {"upsert_count": len(data)}
+
+    def delete(
+        self, collection_name: str, filter: str = "", **kwargs: object
+    ) -> dict[str, int]:
+        if self._write_fail_with is not None:
+            raise self._write_fail_with
+        self.deleted.append((collection_name, filter))
+        return {"delete_count": 0}
+
+    def query(
+        self,
+        collection_name: str,
+        filter: str = "",
+        output_fields: list[str] | None = None,
+        **kwargs: object,
+    ) -> list[dict[str, object]]:
+        self.queried.append((collection_name, filter, list(output_fields or [])))
+        return [dict(row) for row in self._query_rows]
+
     def close(self) -> None:
         self.closed = True
 
 
 def build_db_store(
     collections: tuple[str, ...] = (),
+    query_rows: tuple[dict[str, object], ...] = (),
+    write_fail_with: Exception | None = None,
 ) -> tuple[MilvusStore, FakeMilvusDbClient, FakeMilvusClient]:
     """构造注入了「库客户端」与「普通客户端」的适配器。
 
     两个客户端分开注入，才能验证集合操作走的是哪一个。
     """
-    db_client = FakeMilvusDbClient(collections)
+    db_client = FakeMilvusDbClient(collections, query_rows, write_fail_with)
     plain_client = FakeMilvusClient()
     store = MilvusStore(
         make_config(),
@@ -438,3 +480,186 @@ class TestCloseReleasesBothClients:
         store.close()
 
         assert plain_client.closed is False
+
+
+def make_vector(**overrides: Any) -> ChunkVector:
+    """造一条待写入的子块向量。"""
+    fields: dict[str, Any] = {
+        "chunk_id": "doc-1_c0000",
+        "doc_id": "doc-1",
+        "parent_id": "doc-1_p0000",
+        "chunk_index": 0,
+        "country": "EU",
+        "doc_type": "faq",
+        "publisher": "amazon",
+        "dense": [0.1, 0.2],
+        "sparse": {7: 0.5, 42: 0.25},
+    }
+    fields.update(overrides)
+    return ChunkVector(**fields)
+
+
+def make_query_row(**overrides: Any) -> dict[str, Any]:
+    """造一行 Milvus 查询结果，含两路向量。"""
+    row: dict[str, Any] = {
+        "chunk_id": "doc-1_c0000",
+        "doc_id": "doc-1",
+        "parent_id": "doc-1_p0000",
+        "chunk_index": 0,
+        "dense_vector": [0.1, 0.2],
+        "sparse_vector": {7: 0.5},
+    }
+    row.update(overrides)
+    return row
+
+
+class TestUpsertChunks:
+    def test_writes_every_field(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.upsert_chunks([make_vector()])
+        row = db_client.upserted[0][0]
+
+        assert row["chunk_id"] == "doc-1_c0000"
+        assert row["doc_id"] == "doc-1"
+        assert row["parent_id"] == "doc-1_p0000"
+        assert row["chunk_index"] == 0
+        assert row["country"] == "EU"
+        assert row["doc_type"] == "faq"
+        assert row["publisher"] == "amazon"
+        assert row["dense_vector"] == [0.1, 0.2]
+        assert row["sparse_vector"] == {7: 0.5, 42: 0.25}
+
+    def test_returns_written_count(self) -> None:
+        store, _, _ = build_db_store()
+
+        count = store.upsert_chunks(
+            [make_vector(chunk_id="a"), make_vector(chunk_id="b")]
+        )
+
+        assert count == 2
+
+    def test_empty_list_sends_nothing(self) -> None:
+        # 空列表发一次请求是白跑一趟网络
+        store, db_client, _ = build_db_store()
+
+        assert store.upsert_chunks([]) == 0
+        assert db_client.upserted == []
+
+    def test_uses_the_database_client(self) -> None:
+        # 必须用连到业务库的客户端，否则会写进 default 库，
+        # 而那里有别的项目的集合
+        store, db_client, plain_client = build_db_store()
+
+        store.upsert_chunks([make_vector()])
+
+        assert db_client.upserted != []
+        assert not hasattr(plain_client, "upserted")
+
+    def test_chunk_index_is_passed_through_unchanged(self) -> None:
+        # 子块的 chunk_index 是跨父块全局递增的，切分时定的值要原样写入。
+        # 在适配器里再算一遍就多了一处真相，两边不一致时极难发现。
+        store, db_client, _ = build_db_store()
+
+        store.upsert_chunks([make_vector(chunk_index=17)])
+        row = db_client.upserted[0][0]
+
+        assert row["chunk_index"] == 17
+
+
+class TestDeleteByDoc:
+    def test_filters_by_doc_id(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.delete_by_doc("doc-1")
+
+        _, expression = db_client.deleted[0]
+        assert expression == 'doc_id == "doc-1"'
+
+    def test_rejects_ids_that_could_break_the_expression(self) -> None:
+        # filter 没有参数占位符，值只能拼进字符串。
+        # 这个输入会把过滤条件整个改掉，等于删别人。
+        store, db_client, _ = build_db_store()
+
+        with pytest.raises(ValueError, match="非法字符"):
+            store.delete_by_doc('doc-1" or doc_id != "')
+
+        assert db_client.deleted == []
+
+    def test_uses_the_database_client(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.delete_by_doc("doc-1")
+
+        assert len(db_client.deleted) == 1
+
+
+class TestUpdateScalarFields:
+    def test_returns_zero_when_no_rows(self) -> None:
+        # 没有子块的文档（元数据不齐时只登记不切分）会走到这里
+        store, db_client, _ = build_db_store(query_rows=())
+
+        count = store.update_scalar_fields(
+            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+        )
+
+        assert count == 0
+        assert db_client.upserted == []
+
+    def test_writes_the_new_dimensions(self) -> None:
+        store, db_client, _ = build_db_store(query_rows=(make_query_row(),))
+
+        store.update_scalar_fields(
+            "doc-1", country="DE", doc_type="policy", publisher="eu_commission"
+        )
+        row = db_client.upserted[0][0]
+
+        assert row["country"] == "DE"
+        assert row["doc_type"] == "policy"
+        assert row["publisher"] == "eu_commission"
+
+    def test_carries_the_vectors_back(self) -> None:
+        # Milvus 的 upsert 是整行替换：漏掉向量就等于把向量抹了，
+        # 文档从此检索不到，而且不报错
+        store, db_client, _ = build_db_store(query_rows=(make_query_row(),))
+
+        store.update_scalar_fields(
+            "doc-1", country="DE", doc_type="policy", publisher="eu_commission"
+        )
+        row = db_client.upserted[0][0]
+
+        assert row["dense_vector"] == [0.1, 0.2]
+        assert row["sparse_vector"] == {7: 0.5}
+
+    def test_query_requests_the_vectors(self) -> None:
+        # 查询时不带上向量，回写就没有向量可写
+        store, db_client, _ = build_db_store(query_rows=())
+
+        store.update_scalar_fields(
+            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+        )
+        _, _, output_fields = db_client.queried[0]
+
+        assert "dense_vector" in output_fields
+        assert "sparse_vector" in output_fields
+
+    def test_returns_updated_count(self) -> None:
+        store, _, _ = build_db_store(
+            query_rows=(make_query_row(chunk_id="a"), make_query_row(chunk_id="b"))
+        )
+
+        count = store.update_scalar_fields(
+            "doc-1", country="EU", doc_type="faq", publisher="amazon"
+        )
+
+        assert count == 2
+
+    def test_rejects_ids_that_could_break_the_expression(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        with pytest.raises(ValueError, match="非法字符"):
+            store.update_scalar_fields(
+                'doc" or doc_id != "', country="EU", doc_type="faq", publisher="amazon"
+            )
+
+        assert db_client.queried == []

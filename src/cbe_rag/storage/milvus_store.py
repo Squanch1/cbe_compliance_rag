@@ -10,8 +10,9 @@
 
 from __future__ import annotations
 
+import re
 import time
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from pymilvus import DataType, MilvusClient
 
@@ -24,6 +25,7 @@ from cbe_rag.storage.ddl import (
     MILVUS_SPARSE_INDEX,
 )
 from cbe_rag.storage.health import HealthResult
+from cbe_rag.storage.records import ChunkVector
 
 
 class MilvusClientProtocol(Protocol):
@@ -56,8 +58,55 @@ class MilvusClientProtocol(Protocol):
     def create_index(self, collection_name: str, **kwargs: Any) -> Any:
         ...
 
+    def upsert(
+        self, collection_name: str, data: list[dict[str, Any]], **kwargs: Any
+    ) -> Any:
+        ...
+
+    def delete(
+        self, collection_name: str, filter: str = "", **kwargs: Any
+    ) -> Any:
+        ...
+
+    def query(
+        self,
+        collection_name: str,
+        filter: str = "",
+        output_fields: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        ...
+
     def close(self) -> None:
         ...
+
+
+# doc_id 与 chunk_id 的形状：UUID，或 UUID 加 _p0000 / _c0000 后缀。
+# Milvus 的 filter 表达式没有参数占位符，值只能拼进字符串，因此拼之前
+# 先校验形状。两个值都是程序生成的，正常不会含引号；校验是防止调用方
+# 传进别的东西，把过滤条件整个改了。
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _doc_id_filter(doc_id: str) -> str:
+    """拼出按 doc_id 过滤的表达式。"""
+    if not _SAFE_ID.match(doc_id):
+        raise ValueError("doc_id 含非法字符，无法安全拼进 filter：%r" % doc_id)
+    return 'doc_id == "%s"' % doc_id
+
+
+# 回写标量字段时必须一并带上的列。
+#
+# Milvus 的 upsert 是**整行替换**，没给的列会被清空——尤其不能漏掉两路
+# 向量，否则元数据改一次向量就没了，文档从此检索不到，而且不报错。
+_SCALAR_UPDATE_FIELDS: tuple[str, ...] = (
+    "chunk_id",
+    "doc_id",
+    "parent_id",
+    "chunk_index",
+    "dense_vector",
+    "sparse_vector",
+)
 
 
 class MilvusStore:
@@ -210,6 +259,86 @@ class MilvusStore:
         client.create_index(self._config.collection, index_params=index_params)
 
         return True
+
+    def upsert_chunks(self, vectors: list[ChunkVector]) -> int:
+        """写入子块向量，返回写入条数。空列表直接返回，不发请求。
+
+        用 upsert 而不是 insert：重跑同一份文档时 chunk_id 不变，
+        insert 会撞主键。
+
+        **但重跑不能只靠 upsert。** 新的分块可能比旧的少，多出来的
+        那几条会留在库里继续被检索到——召回的是已经被删掉的段落。
+        调用方要先调 delete_by_doc 清干净。
+        """
+        if not vectors:
+            return 0
+
+        rows = [
+            {
+                "chunk_id": vector.chunk_id,
+                "dense_vector": vector.dense,
+                "sparse_vector": vector.sparse,
+                "doc_id": vector.doc_id,
+                "parent_id": vector.parent_id,
+                "chunk_index": vector.chunk_index,
+                "country": vector.country,
+                "doc_type": vector.doc_type,
+                "publisher": vector.publisher,
+            }
+            for vector in vectors
+        ]
+        self._get_db_client().upsert(
+            collection_name=self._config.collection, data=rows
+        )
+        return len(rows)
+
+    def delete_by_doc(self, doc_id: str) -> None:
+        """删掉某份文档的全部向量。
+
+        重跑这份文档前调用，理由见 upsert_chunks。
+        """
+        self._get_db_client().delete(
+            collection_name=self._config.collection,
+            filter=_doc_id_filter(doc_id),
+        )
+
+    def update_scalar_fields(
+        self, doc_id: str, *, country: str, doc_type: str, publisher: str
+    ) -> int:
+        """把某文档所有子块的过滤字段改成新值，返回改了几条。
+
+        做法是查出来、改字段、再整行写回。**必须连两路向量一起写回**：
+        Milvus 的 upsert 是整行替换，只给标量字段会把向量抹掉，文档
+        从此检索不到，而且不报错。
+
+        代价是一次读加一次写。只发生在「内容没变但清单上的元数据改了」
+        这一种情况下，且同一文档的子块数量有限，可以接受。
+        """
+        client = self._get_db_client()
+        rows = client.query(
+            collection_name=self._config.collection,
+            filter=_doc_id_filter(doc_id),
+            output_fields=list(_SCALAR_UPDATE_FIELDS),
+        )
+        if not rows:
+            return 0
+
+        updated = [
+            {
+                "chunk_id": row["chunk_id"],
+                "doc_id": row["doc_id"],
+                "parent_id": row["parent_id"],
+                "chunk_index": row["chunk_index"],
+                "dense_vector": row["dense_vector"],
+                "sparse_vector": row["sparse_vector"],
+                "country": country,
+                "doc_type": doc_type,
+                "publisher": publisher,
+            }
+            for row in rows
+        ]
+        client.upsert(collection_name=self._config.collection, data=updated)
+        return len(updated)
 
     def close(self) -> None:
         """释放客户端。从未连接过时调用是安全的。"""

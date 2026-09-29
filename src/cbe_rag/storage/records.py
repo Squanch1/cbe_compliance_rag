@@ -40,3 +40,25 @@ class DocumentRecord:
     raw_path: str
     # 元数据齐备时为空元组，这也是最常见的情况
     missing_fields: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ChunkVector:
+    """一条待写入 Milvus 的子块记录。
+
+    **只有子块**：父块不建向量，检索召回子块后靠 parent_id 回 MySQL
+    取全文送进提示词（small-to-big）。父块存进 Milvus 只是白占空间。
+
+    country / doc_type / publisher 在这里冗余存一份，是为了让检索能
+    直接在 Milvus 里按维度过滤，不必先回 MySQL 查一遍。
+    """
+
+    chunk_id: str
+    doc_id: str
+    parent_id: str
+    chunk_index: int
+    country: str
+    doc_type: str
+    publisher: str
+    dense: list[float]
+    sparse: dict[int, float]
