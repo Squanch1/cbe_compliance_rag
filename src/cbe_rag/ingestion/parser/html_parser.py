@@ -107,10 +107,15 @@ def extract_blocks(html: str, selector: str) -> list[Block]:
 
     blocks: list[Block] = []
     for element in outermost:
-        text = _normalise(element.get_text(" ", strip=True))
+        tag_name = element.name
+        # 行内元素（<a>、<b>、<span>）边界之间不能插空格：源码里本来没有，
+        # 插了会让中文标点前多出空格（<a>卖家平台</a>。 变成「卖家平台 。」）。
+        # 文本节点自身带的空格会自然保留，英文词间不会粘连。
+        # 表格相反，单元格之间必须分隔，否则相邻格的内容会粘成一个词。
+        separator = " " if tag_name == "table" else ""
+        text = _normalise(element.get_text(separator, strip=False))
         if not text:
             continue
-        tag_name = element.name
         blocks.append(
             Block(
                 type=_block_type_for(tag_name),

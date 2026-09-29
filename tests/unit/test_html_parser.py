@@ -77,6 +77,34 @@ class TestExtractBlocks:
 
         assert blocks[0].text == "多个 空白 字符"
 
+    def test_inline_element_does_not_introduce_space(self) -> None:
+        # 回归：get_text(" ") 会在行内元素边界插空格，把
+        # <a>卖家平台</a>。 变成「卖家平台 。」，中文标点前多一个空格。
+        # 源码里没有这个空格，拼接时也不该加上。
+        html = page("<p>必须与<a href='#'>卖家平台</a>中的法定名称一致。</p>")
+
+        blocks = extract_blocks(html, SELECTOR)
+
+        assert blocks[0].text == "必须与卖家平台中的法定名称一致。"
+
+    def test_source_spacing_between_inline_elements_is_kept(self) -> None:
+        # 源码里文本节点自身带的空格要保留，英文词间不能粘连
+        html = page("<p><span>Hello</span> <span>World</span></p>")
+
+        assert extract_blocks(html, SELECTOR)[0].text == "Hello World"
+
+    def test_adjacent_inline_elements_without_space_are_joined(self) -> None:
+        # 源码中就没有空格，浏览器也是这样显示的
+        html = page("<p><b>VAT</b>number</p>")
+
+        assert extract_blocks(html, SELECTOR)[0].text == "VATnumber"
+
+    def test_table_cells_are_separated(self) -> None:
+        # 表格单元格之间需要分隔，否则「德国」与「19%」会粘成一个词
+        html = page("<table><tr><td>德国</td><td>19%</td></tr></table>")
+
+        assert extract_blocks(html, SELECTOR)[0].text == "德国 19%"
+
     def test_empty_elements_are_skipped(self) -> None:
         html = page("<p>有内容</p><p>   </p><p></p><p>也有内容</p>")
 
