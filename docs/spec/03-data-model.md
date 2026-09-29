@@ -122,7 +122,8 @@ CREATE TABLE documents (
     doc_type       VARCHAR(32)   NOT NULL COMMENT '文档类型代码，关联 dim_doc_type',
     effective_date DATE          NULL     COMMENT '生效日期，允许为空',
     collected_date DATE          NOT NULL COMMENT '采集日期',
-    status         VARCHAR(16)   NOT NULL COMMENT 'pending/ready/indexed/failed',
+    status         VARCHAR(16)   NOT NULL COMMENT 'pending/ready/indexed/needs_manual/failed',
+    parse_attempts JSON          NULL     COMMENT '各解析层的尝试记录，全部失败时供人工排查',
     missing_fields JSON          NULL     COMMENT '缺失的必填字段名清单',
     raw_path       VARCHAR(1024) NOT NULL COMMENT '原始文件绝对路径，见 CLAUDE.md 5.2 路径约定',
     content_hash   CHAR(64)      NOT NULL COMMENT '原始文件 SHA-256，用于去重与变更检测',
@@ -138,11 +139,26 @@ CREATE TABLE documents (
 **`status` 状态机**
 
 ```
-pending  ──补齐必填元数据──>  ready  ──索引成功──>  indexed
-                                  └──索引失败──>  failed
+pending  ──补齐必填元数据──>  ready
+                                │
+                ┌───────────────┼───────────────┐
+                │               │               │
+          解析与索引成功    解析各层全不合格   索引过程出错
+                │               │               │
+                v               v               v
+            indexed       needs_manual        failed
 ```
 
 必填元数据指 `source_url`、`country`、`doc_type`、`publisher`。缺任一项时 `status = pending`，`missing_fields` 记录缺了哪几个。门禁细节见 `02-architecture.md` 6.2.1。
+
+**`needs_manual` 与 `failed` 是两回事**：
+
+- `needs_manual` 表示**所有解析层都不合格**，机器处理不了，需要人工介入。此时 `parse_attempts` 记录了每一层「用哪个工具、为什么没过」
+- `failed` 表示解析通过但**后续步骤出错**（如写向量库失败），通常是环境或代码问题，重跑可能就好
+
+分开的理由是处理方式完全不同：前者要人去读文档，后者重跑即可。合并成一个状态会让人无从判断该做什么。
+
+**`parse_attempts` 用 JSON 而非文本**：人工排查时需要按层遍历、按字段比较，JSON 可以直接读出结构化数据，一段拼接好的日志只能靠肉眼找。
 
 **`missing_fields` 用 JSON 而非逗号分隔字符串**：需要按字段名查询「哪些文档缺 source_url」，JSON 类型可以建函数索引，字符串做不到。
 
