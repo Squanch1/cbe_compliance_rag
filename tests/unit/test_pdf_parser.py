@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import fitz
@@ -16,9 +17,12 @@ from cbe_rag.ingestion.parser.pdf_parser import (
     PdfParseError,
     TextLine,
     body_font_size,
+    build_blocks,
     extract_lines,
     heading_levels,
+    parse_pdf,
 )
+from cbe_rag.ingestion.parser.schema import BlockType, SourceFormat
 
 PAGE_WIDTH = 595.0
 PAGE_HEIGHT = 842.0
@@ -204,11 +208,162 @@ class TestHeadingLevels:
         assert heading_levels(lines_with(("甲", 12.0), ("乙", 12.0))) == {}
 
     def test_sizes_below_body_are_ignored(self) -> None:
-        # 11pt 是次级正文（免责声明等），不是标题
-        lines = lines_with(("正文", 12.0), ("免责声明", 11.0), ("标题", 14.0))
+        # 11pt 是次级正文（免责声明等），不是标题。
+        # 正文给足行数，避免落到「每档一行」的平局分支上去。
+        lines = lines_with(
+            ("正文一", 12.0), ("正文二", 12.0), ("正文三", 12.0),
+            ("免责声明", 11.0), ("标题", 14.0),
+        )
 
         assert heading_levels(lines) == {14.0: 1}
 
     def test_empty_input_yields_empty_mapping(self) -> None:
         # 空文档没有正文字号可统计，但也不该报错——空文档返回空结果是合理的
         assert heading_levels([]) == {}
+
+
+def make_lines(*specs: tuple) -> list[TextLine]:
+    """造行。specs 元素为 (文本, 字号, y) 或 (文本, 字号, y, 页码)。"""
+    return [
+        TextLine(page=spec[3] if len(spec) > 3 else 1, text=spec[0], size=spec[1], top=spec[2])
+        for spec in specs
+    ]
+
+
+class TestBuildBlocks:
+    def test_lines_in_one_paragraph_are_merged(self) -> None:
+        # 行距正常（13.8pt）的行属于同一段
+        lines = make_lines(("第一行", 12.0, 100.0), ("第二行", 12.0, 113.8), ("第三行", 12.0, 127.6))
+
+        blocks = build_blocks(lines)
+
+        assert len(blocks) == 1
+        assert blocks[0].text == "第一行 第二行 第三行"
+
+    def test_large_gap_starts_new_paragraph(self) -> None:
+        # 段落间距约 25.8pt，明显大于正常行距
+        lines = make_lines(("上段", 12.0, 100.0), ("下段", 12.0, 125.8))
+
+        blocks = build_blocks(lines)
+
+        assert [b.text for b in blocks] == ["上段", "下段"]
+
+    def test_cross_page_breaks_the_paragraph(self) -> None:
+        # 跨页一律断开：判断跨页续段需要额外信息，误合的代价更大
+        lines = make_lines(("页底", 12.0, 780.0, 1), ("页顶", 12.0, 70.0, 2))
+
+        blocks = build_blocks(lines)
+
+        assert [b.text for b in blocks] == ["页底", "页顶"]
+
+    def test_heading_becomes_its_own_block_with_level(self) -> None:
+        lines = make_lines(("1.1 INTRODUCTION", 13.0, 100.0), ("正文", 12.0, 120.0))
+
+        blocks = build_blocks(lines)
+
+        assert blocks[0].type is BlockType.HEADING
+        assert blocks[0].level == 1
+        assert blocks[0].text == "1.1 INTRODUCTION"
+
+    def test_body_after_heading_is_a_separate_paragraph(self) -> None:
+        lines = make_lines(
+            ("标题", 14.0, 100.0), ("第一行", 12.0, 120.0), ("第二行", 12.0, 133.8)
+        )
+
+        blocks = build_blocks(lines)
+
+        assert [b.type for b in blocks] == [BlockType.HEADING, BlockType.PARAGRAPH]
+        assert blocks[1].text == "第一行 第二行"
+
+    def test_same_y_blocks_are_joined(self) -> None:
+        # 目录里的章节号与标题在同一行、属于不同块
+        lines = make_lines(("1", 14.0, 100.0), ("KEY ELEMENTS", 14.0, 100.0))
+
+        blocks = build_blocks(lines)
+
+        assert len(blocks) == 1
+        assert blocks[0].text == "1 KEY ELEMENTS"
+
+    def test_order_is_contiguous(self) -> None:
+        lines = make_lines(
+            ("标题", 14.0, 100.0), ("段一", 12.0, 120.0), ("段二", 12.0, 150.0)
+        )
+
+        assert [b.order for b in build_blocks(lines)] == [0, 1, 2]
+
+    def test_empty_input_yields_no_blocks(self) -> None:
+        assert build_blocks([]) == []
+
+    def test_document_without_headings_is_all_paragraphs(self) -> None:
+        lines = make_lines(("甲", 12.0, 100.0), ("乙", 12.0, 113.8))
+
+        assert all(b.type is BlockType.PARAGRAPH for b in build_blocks(lines))
+
+    def test_tie_breaks_towards_the_smaller_size(self) -> None:
+        # 标题与正文各一行时是平局。标题总比正文大，因此取较小的那个。
+        # 用 most_common 会在平局时按出现顺序任选，结果随排版而变。
+        lines = make_lines(("标题", 13.0, 100.0), ("正文", 12.0, 120.0))
+
+        assert body_font_size(lines) == 12.0
+
+    def test_tie_break_does_not_depend_on_line_order(self) -> None:
+        forward = make_lines(("标题", 13.0, 100.0), ("正文", 12.0, 120.0))
+        backward = make_lines(("正文", 12.0, 100.0), ("标题", 13.0, 120.0))
+
+        assert body_font_size(forward) == body_font_size(backward) == 12.0
+
+
+class TestParsePdf:
+    def test_returns_pdf_source_format(self, tmp_path: Path) -> None:
+        path = make_pdf(tmp_path, [[body_line("Body text")]])
+
+        document = parse_pdf(path, "doc-id", "手工标题")
+
+        assert document.source_format is SourceFormat.PDF
+
+    def test_title_comes_from_caller(self, tmp_path: Path) -> None:
+        # PDF 没有 <h1> 等价物，封面标题常跨多个字号，猜出来的不完整，
+        # 因此标题由调用方传入（通常来自清单里的人工登记）
+        path = make_pdf(tmp_path, [[heading_line("Explanatory Notes")]])
+
+        assert parse_pdf(path, "doc-id", "手工标题").title == "手工标题"
+
+    def test_blocks_match_build_blocks(self, tmp_path: Path) -> None:
+        path = make_pdf(
+            tmp_path,
+            [[heading_line("Chapter 1"), body_line("Body", y=120.0)]],
+        )
+
+        document = parse_pdf(path, "doc-id", "标题")
+
+        assert [b.type for b in document.blocks] == [BlockType.HEADING, BlockType.PARAGRAPH]
+
+    def test_identity_fields_are_carried(self, tmp_path: Path) -> None:
+        path = make_pdf(tmp_path, [[body_line("Body")]])
+
+        document = parse_pdf(path, "doc-id-123", "标题")
+
+        assert document.doc_id == "doc-id-123"
+        assert document.source_path == path
+        assert document.parser_version
+
+    def test_parsed_at_is_injectable(self, tmp_path: Path) -> None:
+        path = make_pdf(tmp_path, [[body_line("Body")]])
+        moment = datetime(2026, 9, 28, 12, 0, 0)
+
+        assert parse_pdf(path, "id", "标题", parsed_at=moment).parsed_at == moment
+
+    def test_pdf_without_text_raises(self, tmp_path: Path) -> None:
+        # 扫描件这类没有文本层的 PDF 应明确报错，而不是产出空文档
+        path = make_pdf(tmp_path, [[]])
+
+        with pytest.raises(PdfParseError, match="没有提取到"):
+            parse_pdf(path, "id", "标题")
+
+    def test_relative_path_raises(self) -> None:
+        with pytest.raises(PdfParseError, match="绝对路径"):
+            parse_pdf(Path("data/raw/x.pdf"), "id", "标题")
+
+    def test_missing_file_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(PdfParseError, match="不存在"):
+            parse_pdf(tmp_path / "absent.pdf", "id", "标题")

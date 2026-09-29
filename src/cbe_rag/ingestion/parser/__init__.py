@@ -1,7 +1,7 @@
 """解析为统一中间表示。"""
 
 from cbe_rag.ingestion.parser.html_parser import (
-    PARSER_VERSION,
+    HTML_PARSER_VERSION,
     SITE_CONTENT_SELECTORS,
     HtmlParseError,
     content_selector_for,
@@ -9,9 +9,11 @@ from cbe_rag.ingestion.parser.html_parser import (
     parse_html,
 )
 from cbe_rag.ingestion.parser.pdf_parser import (
+    PDF_PARSER_VERSION,
     PdfParseError,
     TextLine,
     extract_lines,
+    parse_pdf,
 )
 from cbe_rag.ingestion.parser.schema import (
     Block,
@@ -27,7 +29,7 @@ from cbe_rag.ingestion.parser.schema import (
 )
 
 __all__ = [
-    "PARSER_VERSION",
+    "HTML_PARSER_VERSION",
     "SITE_CONTENT_SELECTORS",
     "Block",
     "BlockType",
@@ -35,6 +37,7 @@ __all__ = [
     "ChunkLevel",
     "DocumentMeta",
     "HtmlParseError",
+    "PDF_PARSER_VERSION",
     "ParsedDocument",
     "PdfParseError",
     "SourceFormat",
@@ -46,4 +49,5 @@ __all__ = [
     "make_parent_chunk_id",
     "new_doc_id",
     "parse_html",
+    "parse_pdf",
 ]

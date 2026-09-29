@@ -24,7 +24,8 @@ from cbe_rag.ingestion.parser.schema import (
 from cbe_rag.ingestion.parser.text import normalise_whitespace
 
 # 解析器版本。解析规则变化时递增，便于回溯「这份产物是哪一版解析器生成的」。
-PARSER_VERSION = "0.1.0"
+# 与 PDF 解析器的版本各自独立演进，因此分开命名。
+HTML_PARSER_VERSION = "0.1.0"
 
 # 站点到正文容器的映射。
 # 接入新来源时在这里加一条，加之前先打开真实页面确认容器选择器。
@@ -188,7 +189,7 @@ def parse_html(
         title=title,
         source_format=SourceFormat.HTML,
         source_path=raw_path,
-        parser_version=PARSER_VERSION,
+        parser_version=HTML_PARSER_VERSION,
         parsed_at=parsed_at if parsed_at is not None else datetime.now(),
         blocks=blocks,
     )

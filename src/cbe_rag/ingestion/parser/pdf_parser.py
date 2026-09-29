@@ -12,12 +12,22 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import fitz
 
+from cbe_rag.ingestion.parser.schema import (
+    Block,
+    BlockType,
+    ParsedDocument,
+    SourceFormat,
+)
 from cbe_rag.ingestion.parser.text import normalise_whitespace
+
+# 解析器版本。与 HTML 解析器的版本各自独立演进。
+PDF_PARSER_VERSION = "0.1.0"
 
 # 页码的文本模式，形如 "5/105"
 _PAGE_NUMBER_PATTERN = re.compile(r"^\d+\s*/\s*\d+$")
@@ -25,6 +35,15 @@ _PAGE_NUMBER_PATTERN = re.compile(r"^\d+\s*/\s*\d+$")
 # 页面高度这个比例以下算页脚区域。
 # 实测欧盟文档的页码在 y≈783-794（页高 842），约 93% 处。
 _BOTTOM_ZONE_RATIO = 0.9
+
+# 段落边界的行距阈值。实测欧盟文档：正常行距约 13.8pt
+# （波动范围 11.5-14.5），段落间距约 25.8pt（波动范围 24.6-26.4），
+# 两档之间有明显空档，取 20pt 作分界很安全。
+_PARAGRAPH_GAP = 20.0
+
+# y 坐标差小于此值视为同一行上的并列块，
+# 例如目录里的章节号与其后的标题。
+_SAME_LINE_TOLERANCE = 1.0
 
 
 class PdfParseError(Exception):
@@ -133,7 +152,11 @@ def body_font_size(lines: list[TextLine]) -> float:
     if not lines:
         raise PdfParseError("没有可供统计的行，无法确定正文字号")
     counts = Counter(round(line.size, 1) for line in lines)
-    return counts.most_common(1)[0][0]
+    top_count = max(counts.values())
+    # 平局时取较小的字号：标题总是比正文大，较小的那个更可能是正文。
+    # 不能用 most_common，它在平局时按出现顺序任选，
+    # 结果取决于文档里哪一行排在前——同一份文档换个排版就变了。
+    return min(size for size, count in counts.items() if count == top_count)
 
 
 def heading_levels(lines: list[TextLine]) -> dict[float, int]:
@@ -155,3 +178,113 @@ def heading_levels(lines: list[TextLine]) -> dict[float, int]:
         reverse=True,
     )
     return {size: index + 1 for index, size in enumerate(larger)}
+
+
+def _continues(previous: TextLine, current: TextLine) -> bool:
+    """判断当前行是否延续上一行所在的段落。"""
+    if current.page != previous.page:
+        # 跨页一律断开。判断跨页续段需要额外信息，断错的代价是一段
+        # 被切成两半，而误合的代价是把两页的无关内容并成一段，
+        # 后者对检索的干扰更大。
+        return False
+
+    gap = current.top - previous.top
+    if gap < _SAME_LINE_TOLERANCE:
+        # 同一行上的并列块，例如目录里的章节号与标题
+        return True
+    return gap <= _PARAGRAPH_GAP
+
+
+def build_blocks(lines: list[TextLine]) -> list[Block]:
+    """把行合并成块。
+
+    字号大于正文的行单独成标题块；其余行按行距合并成段落：
+    同一页内行距正常就续段，行距明显变大或跨页就另起一段。
+
+    PDF 里每行都是独立对象，段落边界只能靠行距推断——这是与 HTML
+    最大的不同，HTML 有 `<p>` 直接标出边界。
+    """
+    if not lines:
+        return []
+
+    levels = heading_levels(lines)
+    blocks: list[Block] = []
+    pending: list[str] = []
+    previous: TextLine | None = None
+
+    def flush() -> None:
+        if not pending:
+            return
+        blocks.append(
+            Block(
+                type=BlockType.PARAGRAPH,
+                text=normalise_whitespace(" ".join(pending)),
+                order=len(blocks),
+            )
+        )
+        pending.clear()
+
+    for line in lines:
+        size = round(line.size, 1)
+        if size in levels:
+            flush()
+            blocks.append(
+                Block(
+                    type=BlockType.HEADING,
+                    text=line.text,
+                    order=len(blocks),
+                    level=levels[size],
+                )
+            )
+        elif previous is not None and _continues(previous, line):
+            pending.append(line.text)
+        else:
+            flush()
+            pending.append(line.text)
+        previous = line
+
+    flush()
+    return blocks
+
+
+def parse_pdf(
+    pdf_path: Path,
+    doc_id: str,
+    title: str,
+    *,
+    parsed_at: datetime | None = None,
+) -> ParsedDocument:
+    """把 PDF 文件解析成 ParsedDocument。
+
+    **标题由调用方传入，不从 PDF 里猜。** PDF 没有 `<h1>` 等价物，
+    封面标题常常跨多个字号与行——实测欧盟文档的标题被拆成 22pt 的
+    「Explanatory Notes」与 18pt 的「VAT e-commerce rules」两部分，
+    靠字号猜出来的往往不完整。清单里已有人工登记的标题，质量更高。
+
+    parsed_at 可注入，便于测试固定时间戳。
+    """
+    # 先判绝对路径再判存在性：相对路径先报「文件不存在」会把
+    # 排查方向带偏（见 CLAUDE.md 5.2）
+    if not pdf_path.is_absolute():
+        raise PdfParseError("pdf_path 必须是绝对路径，收到：%s" % pdf_path)
+    if not pdf_path.is_file():
+        raise PdfParseError("PDF 文件不存在：%s" % pdf_path)
+
+    lines = extract_lines(pdf_path)
+    if not lines:
+        # 扫描件这类没有文本层的 PDF 会走到这里
+        raise PdfParseError("PDF 里没有提取到任何文本：%s" % pdf_path)
+
+    blocks = build_blocks(lines)
+    if not blocks:
+        raise PdfParseError("PDF 未解析出任何内容块：%s" % pdf_path)
+
+    return ParsedDocument(
+        doc_id=doc_id,
+        title=title,
+        source_format=SourceFormat.PDF,
+        source_path=pdf_path,
+        parser_version=PDF_PARSER_VERSION,
+        parsed_at=parsed_at if parsed_at is not None else datetime.now(),
+        blocks=blocks,
+    )
