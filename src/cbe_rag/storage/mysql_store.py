@@ -6,25 +6,34 @@
 
 from __future__ import annotations
 
+import json
 import time
+from datetime import datetime
 from typing import Any, Callable, Protocol
 
 import pymysql
 
 from cbe_rag.config.settings import MysqlConfig
+from cbe_rag.ingestion.parser.schema import Chunk
 from cbe_rag.storage.ddl import (
     COUNTRY_SEED,
     DOC_TYPE_SEED,
     MYSQL_TABLES,
     PUBLISHER_SEED,
+    DocumentStatus,
 )
 from cbe_rag.storage.health import HealthResult
+from cbe_rag.storage.records import DocumentRecord
 
 
 class MysqlCursor(Protocol):
     """游标中本适配器用到的部分。"""
 
-    def execute(self, sql: str) -> Any:
+    def execute(self, sql: str, args: tuple[Any, ...] | None = None) -> Any:
+        ...
+
+    @property
+    def rowcount(self) -> int:
         ...
 
     def executemany(self, sql: str, rows: list[tuple[Any, ...]]) -> Any:
@@ -67,6 +76,114 @@ def _close_quietly(resource: Any) -> None:
         resource.close()
     except Exception:
         pass
+
+
+# 读出文档记录时的列顺序，与 _row_to_record 一一对应。
+#
+# **写死顺序而不用 SELECT ***：表加字段时列顺序会变，解包随即错位，
+# 而且不会报错——值会被安到别的字段上，错得很安静。
+_RECORD_COLUMNS: tuple[str, ...] = (
+    "doc_id",
+    "content_hash",
+    "status",
+    "title",
+    "platform",
+    "source_url",
+    "publisher",
+    "country",
+    "doc_type",
+    "effective_date",
+    "collected_date",
+    "raw_path",
+    "missing_fields",
+)
+
+_RECORD_COLUMNS_SQL = ", ".join(_RECORD_COLUMNS)
+
+_SELECT_BY_HASH = (
+    "SELECT " + _RECORD_COLUMNS_SQL + " FROM documents WHERE content_hash = %s"
+)
+
+_SELECT_ACTIVE_BY_SOURCE_URL = (
+    "SELECT " + _RECORD_COLUMNS_SQL + " FROM documents "
+    "WHERE source_url = %s AND status = %s"
+)
+
+_INSERT_DOCUMENT = (
+    "INSERT INTO documents ("
+    "doc_id, content_hash, status, title, platform, source_url, publisher, "
+    "country, doc_type, effective_date, collected_date, raw_path, "
+    "missing_fields, created_at, updated_at"
+    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+)
+
+# 注意不含 status：元数据变了不代表文档要重新索引，状态由索引流程决定
+_UPDATE_DOCUMENT_META = (
+    "UPDATE documents SET "
+    "title = %s, platform = %s, source_url = %s, publisher = %s, "
+    "country = %s, doc_type = %s, effective_date = %s, "
+    "missing_fields = %s, updated_at = %s "
+    "WHERE doc_id = %s"
+)
+
+_UPDATE_DOCUMENT_STATUS = (
+    "UPDATE documents SET status = %s, updated_at = %s WHERE doc_id = %s"
+)
+
+# 同 source_url 下只留一条活跃记录，其余的收掉
+_SUPERSEDE_SIBLINGS = (
+    "UPDATE documents SET status = %s, updated_at = %s "
+    "WHERE source_url = %s AND doc_id != %s AND status = %s"
+)
+
+_SELECT_ACTIVE_DOCUMENTS = (
+    "SELECT " + _RECORD_COLUMNS_SQL + " FROM documents "
+    "WHERE status = %s ORDER BY collected_date, doc_id"
+)
+
+_DELETE_CHUNKS_BY_DOC = "DELETE FROM chunks WHERE doc_id = %s"
+
+_INSERT_CHUNK = (
+    "INSERT INTO chunks ("
+    "chunk_id, doc_id, parent_id, level, chunk_index, text, token_count, "
+    "start_offset, end_offset, created_at"
+    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+)
+
+
+def _missing_fields_json(record: DocumentRecord) -> str | None:
+    """把缺失字段清单转成 JSON 列的取值。
+
+    空清单存 NULL 而不是 '[]'：两者读回来都是空元组，但 NULL 更贴近
+    「没有缺失」这个语义。
+    """
+    if not record.missing_fields:
+        return None
+    return json.dumps(list(record.missing_fields), ensure_ascii=False)
+
+
+def _row_to_record(row: tuple[Any, ...]) -> DocumentRecord:
+    """把查询结果的一行转成 DocumentRecord。
+
+    missing_fields 是 JSON 列，pymysql 不替我们解析，拿到的是 JSON 文本。
+    """
+    values = dict(zip(_RECORD_COLUMNS, row))
+    missing = values["missing_fields"]
+    return DocumentRecord(
+        doc_id=values["doc_id"],
+        content_hash=values["content_hash"],
+        status=DocumentStatus(values["status"]),
+        title=values["title"],
+        platform=values["platform"],
+        source_url=values["source_url"],
+        publisher=values["publisher"],
+        country=values["country"],
+        doc_type=values["doc_type"],
+        effective_date=values["effective_date"],
+        collected_date=values["collected_date"],
+        raw_path=values["raw_path"],
+        missing_fields=tuple(json.loads(missing)) if missing else (),
+    )
 
 
 class MysqlStore:
@@ -234,6 +351,231 @@ class MysqlStore:
         except Exception:
             # 出错时回滚再抛出。这里捕获所有异常只是为了确保回滚，
             # 异常本身照常向上传播。
+            connection.rollback()
+            raise
+        finally:
+            _close_quietly(cursor)
+            _close_quietly(connection)
+
+    def _fetch_document(
+        self, sql: str, args: tuple[Any, ...]
+    ) -> DocumentRecord | None:
+        """执行查询并转成一条记录，没有结果行时返回 None。
+
+        sql 只接受本模块内的常量，不接受调用方拼接——它直接进数据库。
+        """
+        connection = self._connect()
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            cursor.execute(sql, args)
+            row = cursor.fetchone()
+            return None if row is None else _row_to_record(row)
+        finally:
+            # 只读查询，不需要提交或回滚
+            _close_quietly(cursor)
+            _close_quietly(connection)
+
+    def get_document_by_hash(self, content_hash: str) -> DocumentRecord | None:
+        """按内容哈希查一条文档记录。
+
+        判重的第一步。**命中不等于可以跳过**——命中那条可能没走完
+        （元数据不齐、解析各层不合格、中途出错，或被新版本取代过），
+        要看它的 status 才知道该怎么办，规则见 indexing/decision.py。
+        """
+        return self._fetch_document(_SELECT_BY_HASH, (content_hash,))
+
+    def find_active_by_source_url(self, source_url: str) -> DocumentRecord | None:
+        """按 source_url 查**活跃**（indexed）的记录。
+
+        用来发现「同一链接下的内容变了」。已下线的记录不必查：它们
+        本就不参与检索，再下线一次没有意义。
+        """
+        return self._fetch_document(
+            _SELECT_ACTIVE_BY_SOURCE_URL,
+            (source_url, DocumentStatus.INDEXED.value),
+        )
+
+    def _execute_write(self, sql: str, args: tuple[Any, ...]) -> int:
+        """执行一条写语句并提交，返回受影响的行数。
+
+        sql 只接受本模块内的常量，不接受调用方拼接——它直接进数据库。
+        出错时先回滚再抛出，异常本身照常向上传播。
+        """
+        connection = self._connect()
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            cursor.execute(sql, args)
+            affected = cursor.rowcount
+            connection.commit()
+            return affected
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            _close_quietly(cursor)
+            _close_quietly(connection)
+
+    def insert_document(
+        self, record: DocumentRecord, *, now: datetime | None = None
+    ) -> None:
+        """登记一份文档。
+
+        content_hash 上有唯一约束，重复插入会抛错。但正常判重不该走到
+        这里——调用方应先按哈希查过（见 indexing/service.py）。约束是
+        并发场景下的兜底，不是常规判重手段。
+
+        now 可注入，便于测试固定时间戳。
+        """
+        moment = now if now is not None else datetime.now()
+        self._execute_write(
+            _INSERT_DOCUMENT,
+            (
+                record.doc_id,
+                record.content_hash,
+                record.status.value,
+                record.title,
+                record.platform,
+                record.source_url,
+                record.publisher,
+                record.country,
+                record.doc_type,
+                record.effective_date,
+                record.collected_date,
+                record.raw_path,
+                _missing_fields_json(record),
+                moment,
+                moment,
+            ),
+        )
+
+    def update_document_meta(
+        self, record: DocumentRecord, *, now: datetime | None = None
+    ) -> None:
+        """更新元数据字段，**不动状态，也不动分块**。
+
+        用在「内容没变、清单上的登记改了」这一种情况：切块与向量只
+        依赖正文，元数据改了重跑一遍纯属白干。
+
+        注意 Milvus 里的过滤字段（country / doc_type / publisher）不在
+        这里同步——那是另一处，由索引流程调 MilvusStore 完成。
+        """
+        moment = now if now is not None else datetime.now()
+        self._execute_write(
+            _UPDATE_DOCUMENT_META,
+            (
+                record.title,
+                record.platform,
+                record.source_url,
+                record.publisher,
+                record.country,
+                record.doc_type,
+                record.effective_date,
+                _missing_fields_json(record),
+                moment,
+                record.doc_id,
+            ),
+        )
+
+    def update_document_status(
+        self,
+        doc_id: str,
+        status: DocumentStatus,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        """改一份文档的状态。
+
+        **状态由处理结果决定，不由人工设置**（见 docs/spec/02-architecture.md
+        6.2.1）：索引成功写 indexed，解析各层都不合格写 needs_manual，
+        过程出错写 failed，出了新版本写 superseded，元数据不齐写 pending。
+        """
+        moment = now if now is not None else datetime.now()
+        self._execute_write(
+            _UPDATE_DOCUMENT_STATUS, (status.value, moment, doc_id)
+        )
+
+    def supersede_siblings(self, source_url: str, keep_doc_id: str) -> int:
+        """把同一链接下其他活跃记录下线，返回下线了几条。
+
+        用在索引成功之后。**同 source_url 下只允许有一条活跃记录**，
+        否则旧内容会被检索到并挂进引用里——答案看着有出处，出处却是
+        已经失效的旧版。
+
+        正常情况下判重已经处理过了，这里是兜底：被取代过的文件重新
+        导进来（REINDEX）时，同一链接下可能还留着另一条活跃记录。
+        """
+        moment = datetime.now()
+        return self._execute_write(
+            _SUPERSEDE_SIBLINGS,
+            (
+                DocumentStatus.SUPERSEDED.value,
+                moment,
+                source_url,
+                keep_doc_id,
+                DocumentStatus.INDEXED.value,
+            ),
+        )
+
+    def list_active_documents(self) -> list[DocumentRecord]:
+        """所有活跃（indexed）的文档，按采集日期排序。
+
+        用于「库里有、清单里没有」的对账。调用方只报告不动手：删除
+        不可逆，而且清单改错一个字就会让文档从检索里消失。
+        """
+        connection = self._connect()
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                _SELECT_ACTIVE_DOCUMENTS, (DocumentStatus.INDEXED.value,)
+            )
+            return [_row_to_record(row) for row in cursor.fetchall()]
+        finally:
+            _close_quietly(cursor)
+            _close_quietly(connection)
+
+    def replace_chunks(
+        self, doc_id: str, chunks: list[Chunk], *, now: datetime | None = None
+    ) -> None:
+        """替换一份文档的全部分块：先删旧的再插新的。
+
+        **删和插在同一事务里**。中途失败时旧的还在，不会变成「块被删
+        光了」或「一半新一半旧」——后者尤其难查，检索看不出异常，只是
+        内容对不上。
+
+        重跑同一份文档（REINDEX）必须走这里而不是直接插：主键是
+        chunk_id，直接插会撞键；而块数可能变少，光靠 upsert 清不掉
+        多出来的那些。
+        """
+        moment = now if now is not None else datetime.now()
+        rows = [
+            (
+                chunk.chunk_id,
+                chunk.doc_id,
+                chunk.parent_id,
+                chunk.level.value,
+                chunk.chunk_index,
+                chunk.text,
+                chunk.token_count,
+                chunk.start_offset,
+                chunk.end_offset,
+                moment,
+            )
+            for chunk in chunks
+        ]
+
+        connection = self._connect()
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            cursor.execute(_DELETE_CHUNKS_BY_DOC, (doc_id,))
+            if rows:
+                # 空列表时 executemany 不发语句，省一次往返
+                cursor.executemany(_INSERT_CHUNK, rows)
+            connection.commit()
+        except Exception:
             connection.rollback()
             raise
         finally:

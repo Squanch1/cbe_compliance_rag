@@ -1,17 +1,14 @@
-"""MySQL 适配器的单元测试。
+"""MySQL 适配器的单元测试：健康检查、生命周期与建表。
 
-注入假的连接工厂，不连接真实服务。
+注入假的连接工厂，不连接真实服务。假对象与构造辅助见 mysql_fakes.py。
+文档与分块的读写测试在同目录的 test_mysql_documents.py。
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from pymysql.err import MySQLError, OperationalError
-from pydantic import SecretStr
 
-from cbe_rag.config.settings import MysqlConfig
 from cbe_rag.storage.ddl import (
     COUNTRY_SEED,
     DOC_TYPE_SEED,
@@ -19,118 +16,7 @@ from cbe_rag.storage.ddl import (
     PUBLISHER_SEED,
 )
 from cbe_rag.storage.mysql_store import MysqlStore
-
-DEFAULT_ROW = ("8.0.36", "cbe_compliance")
-
-
-def make_config() -> MysqlConfig:
-    return MysqlConfig(
-        host="127.0.0.1",
-        port=3306,
-        user="cbe",
-        password=SecretStr("fake-password"),
-        database="cbe_compliance",
-    )
-
-
-class FakeCursor:
-    """假的游标。记录执行过的 SQL，返回预设的行与表名。"""
-
-    def __init__(
-        self,
-        row: tuple[Any, ...] | None,
-        fail_with: Exception | None,
-        tables: tuple[str, ...] = (),
-    ) -> None:
-        self._row = row
-        self._fail_with = fail_with
-        self._tables = tables
-        self.executed: list[str] = []
-        self.executed_many: list[tuple[str, list[tuple[Any, ...]]]] = []
-        self.closed = False
-
-    def execute(self, sql: str) -> None:
-        if self._fail_with is not None:
-            raise self._fail_with
-        self.executed.append(sql)
-
-    def executemany(self, sql: str, rows: list[tuple[Any, ...]]) -> None:
-        if self._fail_with is not None:
-            raise self._fail_with
-        self.executed_many.append((sql, rows))
-
-    def fetchone(self) -> tuple[Any, ...] | None:
-        return self._row
-
-    def fetchall(self) -> tuple[tuple[Any, ...], ...]:
-        """模拟 SHOW TABLES 的返回：每行一列。"""
-        return tuple((name,) for name in self._tables)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class FakeConnection:
-    """假的连接。记录关闭与事务调用，便于验证连接不泄漏、出错时回滚。"""
-
-    def __init__(
-        self,
-        row: tuple[Any, ...] | None,
-        fail_with: Exception | None,
-        tables: tuple[str, ...] = (),
-    ) -> None:
-        self.cursor_obj = FakeCursor(row, fail_with, tables)
-        self.closed = False
-        self.commits = 0
-        self.rollbacks = 0
-
-    def cursor(self) -> FakeCursor:
-        return self.cursor_obj
-
-    def commit(self) -> None:
-        self.commits += 1
-
-    def rollback(self) -> None:
-        self.rollbacks += 1
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class FakeConnector:
-    """假的连接工厂。
-
-    连接失败（connect_fail_with）与查询失败（query_fail_with）
-    是两种不同的故障，分开注入。
-
-    创建过的连接都记录下来，测试通过 .last 取最近一个做断言。
-    """
-
-    def __init__(
-        self,
-        *,
-        row: tuple[Any, ...] | None = DEFAULT_ROW,
-        query_fail_with: Exception | None = None,
-        connect_fail_with: Exception | None = None,
-        tables: tuple[str, ...] = (),
-    ) -> None:
-        self._row = row
-        self._query_fail_with = query_fail_with
-        self._connect_fail_with = connect_fail_with
-        self._tables = tables
-        self.connections: list[FakeConnection] = []
-
-    def __call__(self) -> FakeConnection:
-        if self._connect_fail_with is not None:
-            raise self._connect_fail_with
-        conn = FakeConnection(self._row, self._query_fail_with, self._tables)
-        self.connections.append(conn)
-        return conn
-
-    @property
-    def last(self) -> FakeConnection:
-        assert self.connections, "尚未创建任何连接"
-        return self.connections[-1]
+from mysql_fakes import FakeConnector, make_config
 
 
 class TestHealthCheckSuccess:
