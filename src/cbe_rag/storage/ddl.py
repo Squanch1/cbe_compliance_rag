@@ -9,6 +9,28 @@ MySQL 的建表语句、维度表的初始数据、Milvus 集合的字段与索�
 
 from __future__ import annotations
 
+from enum import Enum
+
+
+class DocumentStatus(str, Enum):
+    """`documents.status` 的取值。
+
+    **只有 INDEXED 参与检索**，其余四个状态都不会被召回。检索层的
+    过滤条件写成 `status == DocumentStatus.INDEXED`，而不是逐个排除
+    其余状态——以后新增状态时检索代码不必跟着改，也就不会漏。
+
+    取值与 MYSQL_TABLES 里 `documents.status` 的注释是同一份定义的
+    两处写法，改一处要改两处。有测试断言两者一致（注释里出现枚举的
+    每个值），漏改会被测出来。
+    """
+
+    PENDING = "pending"
+    INDEXED = "indexed"
+    NEEDS_MANUAL = "needs_manual"
+    FAILED = "failed"
+    SUPERSEDED = "superseded"
+
+
 # ============================================================
 # MySQL
 # ============================================================
