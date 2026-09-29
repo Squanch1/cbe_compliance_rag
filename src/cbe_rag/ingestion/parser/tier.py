@@ -71,6 +71,7 @@ class ParseOutcome:
 
     document: ParsedDocument | None
     attempts: list[TierAttempt]
+    difficulty: str = ""
 
     @property
     def needs_manual(self) -> bool:
