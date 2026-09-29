@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -121,3 +122,36 @@ def extract_lines(pdf_path: Path) -> list[TextLine]:
         document.close()
 
     return lines
+
+
+def body_font_size(lines: list[TextLine]) -> float:
+    """统计正文字号。
+
+    按**行数**取众数，而不是按字符数。两者在正常排版下结论一致，
+    但行数更直观：正文占的行最多，这一点一眼能解释清楚。
+    """
+    if not lines:
+        raise PdfParseError("没有可供统计的行，无法确定正文字号")
+    counts = Counter(round(line.size, 1) for line in lines)
+    return counts.most_common(1)[0][0]
+
+
+def heading_levels(lines: list[TextLine]) -> dict[float, int]:
+    """把大于正文字号的字号映射成标题层级。
+
+    字号越大层级越浅：最大的是 1 级，次大的是 2 级，依此类推。
+    层级由字号**相对关系**决定而不是写死数值，换一份排版不同的
+    文档不用改代码。
+
+    小于或等于正文字号的都不算标题——实测欧盟文档里 11pt 是
+    次级正文（免责声明、前言），不是标题。
+    """
+    if not lines:
+        return {}
+
+    body = body_font_size(lines)
+    larger = sorted(
+        {round(line.size, 1) for line in lines if line.size > body},
+        reverse=True,
+    )
+    return {size: index + 1 for index, size in enumerate(larger)}

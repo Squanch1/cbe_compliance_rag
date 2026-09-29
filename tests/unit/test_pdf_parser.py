@@ -14,7 +14,10 @@ import pytest
 
 from cbe_rag.ingestion.parser.pdf_parser import (
     PdfParseError,
+    TextLine,
+    body_font_size,
     extract_lines,
+    heading_levels,
 )
 
 PAGE_WIDTH = 595.0
@@ -154,3 +157,58 @@ class TestInputValidation:
 
         with pytest.raises(PdfParseError):
             extract_lines(path)
+
+
+def lines_with(*specs: tuple[str, float]) -> list[TextLine]:
+    """按 (文本, 字号) 批量造行，y 坐标依次递增。"""
+    return [
+        TextLine(page=1, text=text, size=size, top=100.0 + index * 20.0)
+        for index, (text, size) in enumerate(specs)
+    ]
+
+
+class TestBodyFontSize:
+    def test_picks_the_most_common_size(self) -> None:
+        lines = lines_with(
+            ("正文一", 12.0), ("正文二", 12.0), ("正文三", 12.0),
+            ("标题", 16.0), ("小字", 9.0),
+        )
+
+        assert body_font_size(lines) == 12.0
+
+    def test_single_size_document(self) -> None:
+        assert body_font_size(lines_with(("只有正文", 11.0))) == 11.0
+
+    def test_empty_input_raises(self) -> None:
+        # 没有行就没有「正文」，静默返回一个默认字号会让后续判断全错
+        with pytest.raises(PdfParseError, match="统计"):
+            body_font_size([])
+
+
+class TestHeadingLevels:
+    def test_larger_sizes_become_headings(self) -> None:
+        lines = lines_with(("正文", 12.0), ("二级", 13.0), ("一级", 14.0))
+
+        levels = heading_levels(lines)
+
+        assert levels == {14.0: 1, 13.0: 2}
+
+    def test_levels_are_relative_not_hardcoded(self) -> None:
+        # 换一份排版不同的文档，层级应随字号相对关系变化
+        lines = lines_with(("正文", 10.0), ("大标题", 20.0), ("小标题", 15.0))
+
+        assert heading_levels(lines) == {20.0: 1, 15.0: 2}
+
+    def test_no_larger_size_yields_empty_mapping(self) -> None:
+        # 全文同一字号：没有标题，不该硬造出层级
+        assert heading_levels(lines_with(("甲", 12.0), ("乙", 12.0))) == {}
+
+    def test_sizes_below_body_are_ignored(self) -> None:
+        # 11pt 是次级正文（免责声明等），不是标题
+        lines = lines_with(("正文", 12.0), ("免责声明", 11.0), ("标题", 14.0))
+
+        assert heading_levels(lines) == {14.0: 1}
+
+    def test_empty_input_yields_empty_mapping(self) -> None:
+        # 空文档没有正文字号可统计，但也不该报错——空文档返回空结果是合理的
+        assert heading_levels([]) == {}
