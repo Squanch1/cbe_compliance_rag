@@ -149,6 +149,33 @@ class TestRowToRecord:
         assert record is not None
         assert record.missing_fields == ()
 
+    def test_parses_parse_attempts_json(self) -> None:
+        # 调阈值时要看分布，而分布只能从这些原始分数里来
+        store = MysqlStore(
+            make_config(),
+            connect=FakeConnector(
+                row=make_row(
+                    parse_attempts='[{"tier": "pdf.text_layer", "ok": false}]'
+                )
+            ),
+        )
+
+        record = store.get_document_by_hash("a" * 64)
+
+        assert record is not None
+        assert record.parse_attempts[0]["tier"] == "pdf.text_layer"
+
+    def test_null_parse_attempts_becomes_empty_tuple(self) -> None:
+        store = MysqlStore(
+            make_config(),
+            connect=FakeConnector(row=make_row(parse_attempts=None)),
+        )
+
+        record = store.get_document_by_hash("a" * 64)
+
+        assert record is not None
+        assert record.parse_attempts == ()
+
     def test_maps_status_string_to_enum(self) -> None:
         store = MysqlStore(
             make_config(),
@@ -218,6 +245,27 @@ class TestInsertDocument:
         values = inserted_values(connector)
 
         assert values["missing_fields"] is None
+
+    def test_empty_parse_attempts_is_stored_as_null(self) -> None:
+        connector = FakeConnector()
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.insert_document(make_record())
+        values = inserted_values(connector)
+
+        assert values["parse_attempts"] is None
+
+    def test_parse_attempts_are_stored_as_json(self) -> None:
+        connector = FakeConnector()
+        store = MysqlStore(make_config(), connect=connector)
+        record = make_record(
+            parse_attempts=({"tier": "pdf.text_layer", "ok": False},)
+        )
+
+        store.insert_document(record)
+        values = inserted_values(connector)
+
+        assert json.loads(values["parse_attempts"])[0]["tier"] == "pdf.text_layer"
 
     def test_missing_fields_are_stored_as_json(self) -> None:
         connector = FakeConnector()
@@ -353,6 +401,33 @@ class TestUpdateDocumentStatus:
         store.update_document_status("doc-1", DocumentStatus.INDEXED)
 
         assert connector.last.commits == 1
+
+    def test_writes_parse_attempts_when_given(self) -> None:
+        connector = FakeConnector()
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.update_document_status(
+            "doc-1",
+            DocumentStatus.NEEDS_MANUAL,
+            parse_attempts=[{"tier": "pdf.text_layer", "ok": False}],
+        )
+
+        sql = connector.last.cursor_obj.executed[0]
+        args = connector.last.cursor_obj.executed_args[0]
+        assert "parse_attempts" in sql
+        assert args is not None
+        assert json.loads(args[2])[0]["tier"] == "pdf.text_layer"
+
+    def test_omitting_parse_attempts_leaves_the_column_alone(self) -> None:
+        # 不传时不能把它清掉：只改状态是「这次不该碰它」，
+        # 和「解析过但没有记录可写」是两回事
+        connector = FakeConnector()
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.update_document_status("doc-1", DocumentStatus.SUPERSEDED)
+        sql = connector.last.cursor_obj.executed[0]
+
+        assert "parse_attempts" not in sql
 
 
 class TestSupersedeSiblings:

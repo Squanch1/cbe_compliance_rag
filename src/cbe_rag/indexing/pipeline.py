@@ -12,13 +12,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from cbe_rag.ingestion.chunker.counter import TokenCounter
 from cbe_rag.ingestion.chunker.service import chunk_document
 from cbe_rag.ingestion.fetcher.collector import CollectedDocument
 from cbe_rag.ingestion.parser.router import parse_document
 from cbe_rag.ingestion.parser.schema import Chunk, ChunkLevel, new_doc_id
-from cbe_rag.ingestion.parser.tier import ParseOutcome, ParseRequest
+from cbe_rag.ingestion.parser.tier import ParseOutcome, ParseRequest, TierAttempt
 from cbe_rag.indexing.decision import decide
 from cbe_rag.indexing.hashing import file_content_hash
 from cbe_rag.indexing.models import Decision, DocumentOutcome, ImportAction
@@ -214,6 +215,25 @@ class AnalysisResult:
     child_count: int = 0
 
 
+def _attempts_to_json(attempts: list[TierAttempt]) -> list[dict[str, Any]]:
+    """把各层的尝试记录转成可落库的结构。
+
+    除了「用哪个工具、为什么没过」，还带上质量评估的原始分数：调阈值时
+    要看分布，而分布只能从这些分数里来。一段拼接好的文字做不到这一点
+    （见 docs/spec/03-data-model.md）。
+    """
+    return [
+        {
+            "tier": attempt.tier,
+            "ok": attempt.ok,
+            "detail": attempt.detail,
+            "metrics": dict(attempt.report.metrics) if attempt.report else {},
+            "failures": list(attempt.report.failures) if attempt.report else [],
+        }
+        for attempt in attempts
+    ]
+
+
 def _attempt_summary(outcome: ParseOutcome) -> str:
     """把各层解析的失败原因压成一句话。
 
@@ -278,8 +298,13 @@ def analyze_document(
         )
     )
     if parsed.document is None:
+        # 尝试记录必须落库：这是人工接手时唯一的线索，而文档下次被改动
+        # 之前不会有第二次机会把它记下来
         context.mysql.update_document_status(
-            record.doc_id, DocumentStatus.NEEDS_MANUAL, now=now
+            record.doc_id,
+            DocumentStatus.NEEDS_MANUAL,
+            parse_attempts=_attempts_to_json(parsed.attempts),
+            now=now,
         )
         return AnalysisResult(ok=False, detail=_attempt_summary(parsed))
 
@@ -302,7 +327,10 @@ def analyze_document(
         raise
 
     context.mysql.update_document_status(
-        record.doc_id, DocumentStatus.INDEXED, now=now
+        record.doc_id,
+        DocumentStatus.INDEXED,
+        parse_attempts=_attempts_to_json(parsed.attempts),
+        now=now,
     )
     _retire_siblings(record, context)
 

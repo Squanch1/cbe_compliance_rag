@@ -164,6 +164,7 @@ _RECORD_VALUES: dict[str, Any] = {
     "collected_date": date(2026, 9, 20),
     "raw_path": "C:/data/raw/amazon-eu-vat-faq.html",
     "missing_fields": None,
+    "parse_attempts": None,
 }
 
 

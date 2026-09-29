@@ -96,6 +96,7 @@ _RECORD_COLUMNS: tuple[str, ...] = (
     "collected_date",
     "raw_path",
     "missing_fields",
+    "parse_attempts",
 )
 
 _RECORD_COLUMNS_SQL = ", ".join(_RECORD_COLUMNS)
@@ -113,8 +114,8 @@ _INSERT_DOCUMENT = (
     "INSERT INTO documents ("
     "doc_id, content_hash, status, title, platform, source_url, publisher, "
     "country, doc_type, effective_date, collected_date, raw_path, "
-    "missing_fields, created_at, updated_at"
-    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    "missing_fields, parse_attempts, created_at, updated_at"
+    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
 # 注意不含 status：元数据变了不代表文档要重新索引，状态由索引流程决定
@@ -128,6 +129,13 @@ _UPDATE_DOCUMENT_META = (
 
 _UPDATE_DOCUMENT_STATUS = (
     "UPDATE documents SET status = %s, updated_at = %s WHERE doc_id = %s"
+)
+
+# 带解析尝试记录的那条。两者是同一件事的两面（「这次处理结果如何」），
+# 一起写省一次往返。
+_UPDATE_DOCUMENT_STATUS_WITH_ATTEMPTS = (
+    "UPDATE documents SET status = %s, updated_at = %s, parse_attempts = %s "
+    "WHERE doc_id = %s"
 )
 
 # 同 source_url 下只留一条活跃记录，其余的收掉。
@@ -218,6 +226,13 @@ def _missing_fields_json(record: DocumentRecord) -> str | None:
     return json.dumps(list(record.missing_fields), ensure_ascii=False)
 
 
+def _parse_attempts_json(record: DocumentRecord) -> str | None:
+    """把各解析层的尝试记录转成 JSON 列的取值。空记录存 NULL 同理。"""
+    if not record.parse_attempts:
+        return None
+    return json.dumps(list(record.parse_attempts), ensure_ascii=False)
+
+
 def _row_to_record(row: tuple[Any, ...]) -> DocumentRecord:
     """把查询结果的一行转成 DocumentRecord。
 
@@ -225,6 +240,7 @@ def _row_to_record(row: tuple[Any, ...]) -> DocumentRecord:
     """
     values = dict(zip(_RECORD_COLUMNS, row))
     missing = values["missing_fields"]
+    attempts = values["parse_attempts"]
     return DocumentRecord(
         doc_id=values["doc_id"],
         content_hash=values["content_hash"],
@@ -239,6 +255,7 @@ def _row_to_record(row: tuple[Any, ...]) -> DocumentRecord:
         collected_date=values["collected_date"],
         raw_path=values["raw_path"],
         missing_fields=tuple(json.loads(missing)) if missing else (),
+        parse_attempts=tuple(json.loads(attempts)) if attempts else (),
     )
 
 
@@ -501,6 +518,7 @@ class MysqlStore:
                 record.collected_date,
                 record.raw_path,
                 _missing_fields_json(record),
+                _parse_attempts_json(record),
                 moment,
                 moment,
             ),
@@ -539,17 +557,35 @@ class MysqlStore:
         doc_id: str,
         status: DocumentStatus,
         *,
+        parse_attempts: list[dict[str, Any]] | None = None,
         now: datetime | None = None,
     ) -> None:
-        """改一份文档的状态。
+        """改一份文档的状态，可选地一并写解析尝试记录。
 
         **状态由处理结果决定，不由人工设置**（见 docs/spec/02-architecture.md
         6.2.1）：索引成功写 indexed，解析各层都不合格写 needs_manual，
         过程出错写 failed，出了新版本写 superseded，元数据不齐写 pending。
+
+        parse_attempts 与状态是同一件事的两面，一起写省一次往返。
+        **不传时不动那一列**：传空列表与不传是两回事，前者是「解析过但
+        没有记录可写」，后者是「这次不该碰它」。
         """
         moment = now if now is not None else datetime.now()
+
+        if parse_attempts is None:
+            self._execute_write(
+                _UPDATE_DOCUMENT_STATUS, (status.value, moment, doc_id)
+            )
+            return
+
         self._execute_write(
-            _UPDATE_DOCUMENT_STATUS, (status.value, moment, doc_id)
+            _UPDATE_DOCUMENT_STATUS_WITH_ATTEMPTS,
+            (
+                status.value,
+                moment,
+                json.dumps(parse_attempts, ensure_ascii=False),
+                doc_id,
+            ),
         )
 
     def supersede_siblings(

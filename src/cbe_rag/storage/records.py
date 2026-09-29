@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from cbe_rag.storage.ddl import DocumentStatus
 
@@ -40,6 +41,12 @@ class DocumentRecord:
     raw_path: str
     # 元数据齐备时为空元组，这也是最常见的情况
     missing_fields: tuple[str, ...] = ()
+    # 各解析层的尝试记录，落库时转成 JSON。
+    #
+    # 只有真正进过解析的文档才有内容——元数据不齐而没切分的那些这里是空的。
+    # 每条记「用哪个工具、为什么没过」，外加质量评估的原始分数：调阈值时
+    # 要看分布，而分布只能从这些分数里来。
+    parse_attempts: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)

@@ -202,6 +202,7 @@ class RecordingMysqlStore:
         self.meta_updates: list[DocumentRecord] = []
         self.status_updates: list[tuple[str, DocumentStatus]] = []
         self.chunks_written: list[tuple[str, list[Chunk]]] = []
+        self.parse_attempts_written: list[tuple[str, list[dict[str, Any]]]] = []
         self.sibling_lookups: list[tuple[str, str]] = []
         self._siblings = siblings if siblings is not None else []
         self._by_hash = by_hash
@@ -228,9 +229,16 @@ class RecordingMysqlStore:
         self.meta_updates.append(record)
 
     def update_document_status(
-        self, doc_id: str, status: DocumentStatus, *, now: Any = None
+        self,
+        doc_id: str,
+        status: DocumentStatus,
+        *,
+        parse_attempts: list[dict[str, Any]] | None = None,
+        now: Any = None,
     ) -> None:
         self.status_updates.append((doc_id, status))
+        if parse_attempts is not None:
+            self.parse_attempts_written.append((doc_id, parse_attempts))
 
     def replace_chunks(
         self, doc_id: str, chunks: list[Chunk], *, now: Any = None

@@ -466,18 +466,31 @@ class TestSiblingRetirement:
         assert context.milvus.deleted == [record.doc_id]
 
 
+# 正文不在 help-content 容器里，选择器取不到内容。
+# 这一层是抛异常失败的，还没走到质量评估，因此没有 report。
+UNPARSABLE = (
+    "<!doctype html><html><body>"
+    "<div id='other'>正文在别的容器里，选择器取不到</div>"
+    "</body></html>"
+)
+
+# 能解析出内容，但总字符数远低于质量门禁的下限（200）。
+# 这一层走到了质量评估才失败，因此带 report。
+#
+# 必须有 <h1> 或 <title>：解析器在取标题那一步就会报错，没有标题的话
+# 根本走不到质量评估，测的就不是这条路径了。
+TOO_SHORT = (
+    "<!doctype html><html><body><div id='help-content'>"
+    "<h1>短文档</h1><p>太短</p></div></body></html>"
+)
+
+
 class TestParseFailure:
-    # 正文不在 help-content 容器里，两层解析都拿不到内容
-    UNPARSABLE = (
-        "<!doctype html><html><body>"
-        "<div id='other'>正文在别的容器里，选择器取不到</div>"
-        "</body></html>"
-    )
 
     def test_unparsable_content_marks_needs_manual(self, tmp_path: Path) -> None:
         context = make_context()
 
-        result, record = analyze(tmp_path, context, body=self.UNPARSABLE)
+        result, record = analyze(tmp_path, context, body=UNPARSABLE)
 
         assert result.ok is False
         assert (
@@ -488,7 +501,7 @@ class TestParseFailure:
     def test_nothing_is_written_to_storage(self, tmp_path: Path) -> None:
         context = make_context()
 
-        analyze(tmp_path, context, body=self.UNPARSABLE)
+        analyze(tmp_path, context, body=UNPARSABLE)
 
         assert context.milvus.upserted == []
         assert context.mysql.chunks_written == []
@@ -497,10 +510,68 @@ class TestParseFailure:
         # 人工处理时最想知道机器试过什么、卡在哪
         context = make_context()
 
-        result, _ = analyze(tmp_path, context, body=self.UNPARSABLE)
+        result, _ = analyze(tmp_path, context, body=UNPARSABLE)
 
         assert "html.selector" in result.detail
         assert "交人工" in result.detail
+
+
+class TestParseAttemptsAreRecorded:
+    def test_failure_records_every_tier_that_ran(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        analyze(tmp_path, context, body=UNPARSABLE)
+
+        written = context.mysql.parse_attempts_written[0][1]
+        assert written
+        assert written[0]["tier"] == "html.selector"
+
+    def test_failure_records_why_it_failed(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        analyze(tmp_path, context, body=UNPARSABLE)
+
+        written = context.mysql.parse_attempts_written[0][1]
+        assert written[0]["ok"] is False
+        assert written[0]["detail"]
+
+    def test_quality_failure_records_the_metrics(self, tmp_path: Path) -> None:
+        # 调阈值时要看分布，而分布只能从这些原始分数里来
+        context = make_context()
+
+        analyze(tmp_path, context, body=TOO_SHORT)
+
+        written = context.mysql.parse_attempts_written[0][1]
+        assert written[0]["metrics"]
+        assert written[0]["failures"]
+
+    def test_exception_failure_has_no_metrics(self, tmp_path: Path) -> None:
+        # 抛异常的那层还没走到质量评估，没有分数可记。
+        # 这里不是缺陷：detail 里写着异常类型，那才是排查线索。
+        context = make_context()
+
+        analyze(tmp_path, context, body=UNPARSABLE)
+
+        written = context.mysql.parse_attempts_written[0][1]
+        assert written[0]["metrics"] == {}
+        assert written[0]["detail"]
+
+    def test_success_also_records_the_attempts(self, tmp_path: Path) -> None:
+        # 「这份文档是哪一层解析出来的」对排查别的质量问题同样有用
+        context = make_context()
+
+        analyze(tmp_path, context)
+
+        written = context.mysql.parse_attempts_written[0][1]
+        assert written[0]["ok"] is True
+
+    def test_metadata_gate_writes_no_attempts(self, tmp_path: Path) -> None:
+        # 没进解析就没有尝试记录，那一列该是空的
+        context = make_context()
+
+        analyze(tmp_path, context, publisher=None)
+
+        assert context.mysql.parse_attempts_written == []
 
 
 class TestSkipThroughIndexDocument:
