@@ -130,7 +130,15 @@ _UPDATE_DOCUMENT_STATUS = (
     "UPDATE documents SET status = %s, updated_at = %s WHERE doc_id = %s"
 )
 
-# 同 source_url 下只留一条活跃记录，其余的收掉
+# 同 source_url 下只留一条活跃记录，其余的收掉。
+#
+# 先查出来再改：返回值不只是报告用，调用方还要拿它去删 Milvus 里的向量
+# ——光改状态拦不住检索，理由见 supersede_siblings。
+_SELECT_SIBLING_IDS = (
+    "SELECT doc_id FROM documents "
+    "WHERE source_url = %s AND doc_id != %s AND status = %s"
+)
+
 _SUPERSEDE_SIBLINGS = (
     "UPDATE documents SET status = %s, updated_at = %s "
     "WHERE source_url = %s AND doc_id != %s AND status = %s"
@@ -496,27 +504,60 @@ class MysqlStore:
             _UPDATE_DOCUMENT_STATUS, (status.value, moment, doc_id)
         )
 
-    def supersede_siblings(self, source_url: str, keep_doc_id: str) -> int:
-        """把同一链接下其他活跃记录下线，返回下线了几条。
+    def supersede_siblings(
+        self,
+        source_url: str,
+        keep_doc_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> list[str]:
+        """把同一链接下其他活跃记录下线，返回被下线的 doc_id 列表。
 
         用在索引成功之后。**同 source_url 下只允许有一条活跃记录**，
         否则旧内容会被检索到并挂进引用里——答案看着有出处，出处却是
         已经失效的旧版。
 
-        正常情况下判重已经处理过了，这里是兜底：被取代过的文件重新
+        **返回值不只是报告用，调用方要拿它去删 Milvus 里的向量。**
+        仅把状态改成 superseded 拦不住检索：Milvus 里没有 status 字段，
+        检索按 country / doc_type / publisher 过滤，筛不到状态，旧记录的
+        向量照样会被召回。
+
+        返回空列表是正常情况：绝大多数链接下只有一条活跃记录。
+
+        正常情况下判重已经处理过了，这里是兜底——被取代过的文件重新
         导进来（REINDEX）时，同一链接下可能还留着另一条活跃记录。
         """
-        moment = datetime.now()
-        return self._execute_write(
-            _SUPERSEDE_SIBLINGS,
-            (
-                DocumentStatus.SUPERSEDED.value,
-                moment,
-                source_url,
-                keep_doc_id,
-                DocumentStatus.INDEXED.value,
-            ),
-        )
+        connection = self._connect()
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                _SELECT_SIBLING_IDS,
+                (source_url, keep_doc_id, DocumentStatus.INDEXED.value),
+            )
+            doc_ids = [row[0] for row in cursor.fetchall()]
+
+            if doc_ids:
+                moment = now if now is not None else datetime.now()
+                cursor.execute(
+                    _SUPERSEDE_SIBLINGS,
+                    (
+                        DocumentStatus.SUPERSEDED.value,
+                        moment,
+                        source_url,
+                        keep_doc_id,
+                        DocumentStatus.INDEXED.value,
+                    ),
+                )
+
+            connection.commit()
+            return doc_ids
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            _close_quietly(cursor)
+            _close_quietly(connection)
 
     def list_active_documents(self) -> list[DocumentRecord]:
         """所有活跃（indexed）的文档，按采集日期排序。

@@ -352,22 +352,51 @@ class TestUpdateDocumentStatus:
 
 
 class TestSupersedeSiblings:
+    def test_returns_the_ids_that_were_taken_down(self) -> None:
+        # 调用方要拿这些 id 去删 Milvus 里的向量——只改状态拦不住检索
+        connector = FakeConnector(rows=(("doc-old",), ("doc-older",)))
+        store = MysqlStore(make_config(), connect=connector)
+
+        taken_down = store.supersede_siblings("https://example.org/a", "doc-new")
+
+        assert taken_down == ["doc-old", "doc-older"]
+
+    def test_selects_before_updating(self) -> None:
+        # 顺序反了就拿不到要下线的 id 了
+        connector = FakeConnector(rows=(("doc-old",),))
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.supersede_siblings("https://example.org/a", "doc-new")
+
+        executed = connector.last.cursor_obj.executed
+        assert executed[0].upper().startswith("SELECT")
+        assert executed[1].upper().startswith("UPDATE")
+
     def test_only_touches_indexed_records(self) -> None:
         # 已下线的再下线一次没有意义；没走完的（pending 等）更不该被动，
         # 它们本来就不可检索
-        connector = FakeConnector()
+        connector = FakeConnector(rows=())
         store = MysqlStore(make_config(), connect=connector)
 
         store.supersede_siblings("https://example.org/a", "doc-new")
 
         args = connector.last.cursor_obj.executed_args[0]
         assert args is not None
-        assert args[0] == DocumentStatus.SUPERSEDED.value
         assert args[-1] == DocumentStatus.INDEXED.value
+
+    def test_writes_the_superseded_status(self) -> None:
+        connector = FakeConnector(rows=(("doc-old",),))
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.supersede_siblings("https://example.org/a", "doc-new")
+
+        args = connector.last.cursor_obj.executed_args[1]
+        assert args is not None
+        assert args[0] == DocumentStatus.SUPERSEDED.value
 
     def test_keeps_the_given_document(self) -> None:
         # 刚索引成功的那条不能被自己收掉
-        connector = FakeConnector()
+        connector = FakeConnector(rows=())
         store = MysqlStore(make_config(), connect=connector)
 
         store.supersede_siblings("https://example.org/a", "doc-new")
@@ -378,26 +407,39 @@ class TestSupersedeSiblings:
         assert args is not None
         assert "doc-new" in args
 
-    def test_returns_affected_row_count(self) -> None:
-        connector = FakeConnector(rowcount=3)
+    def test_no_siblings_skips_the_update(self) -> None:
+        # 绝大多数导入都只有一条活跃记录，这时不必发那条 UPDATE
+        connector = FakeConnector(rows=())
         store = MysqlStore(make_config(), connect=connector)
 
-        assert store.supersede_siblings("https://example.org/a", "doc-new") == 3
-
-    def test_zero_affected_is_not_an_error(self) -> None:
-        # 绝大多数导入都只有一条活跃记录，收掉 0 条是正常情况
-        connector = FakeConnector(rowcount=0)
-        store = MysqlStore(make_config(), connect=connector)
-
-        assert store.supersede_siblings("https://example.org/a", "doc-new") == 0
+        assert store.supersede_siblings("https://example.org/a", "doc-new") == []
+        assert len(connector.last.cursor_obj.executed) == 1
 
     def test_commits(self) -> None:
-        connector = FakeConnector()
+        connector = FakeConnector(rows=(("doc-old",),))
         store = MysqlStore(make_config(), connect=connector)
 
         store.supersede_siblings("https://example.org/a", "doc-new")
 
         assert connector.last.commits == 1
+
+    def test_rolls_back_on_failure(self) -> None:
+        connector = FakeConnector(query_fail_with=MySQLError("表不存在"))
+        store = MysqlStore(make_config(), connect=connector)
+
+        with pytest.raises(MySQLError):
+            store.supersede_siblings("https://example.org/a", "doc-new")
+
+        assert connector.last.rollbacks == 1
+
+    def test_closes_resources(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.supersede_siblings("https://example.org/a", "doc-new")
+
+        assert connector.last.cursor_obj.closed is True
+        assert connector.last.closed is True
 
 
 class TestListActiveDocuments:

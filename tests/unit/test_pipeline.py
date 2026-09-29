@@ -13,16 +13,20 @@ from typing import Any
 import pytest
 
 from cbe_rag.ingestion.fetcher.collector import CollectedDocument
-from cbe_rag.ingestion.parser.schema import DocumentMeta
+from cbe_rag.ingestion.parser.schema import Chunk, ChunkLevel, DocumentMeta
 from cbe_rag.indexing.hashing import file_content_hash
 from cbe_rag.indexing.models import Decision, ImportAction
 from cbe_rag.indexing.pipeline import (
+    IndexingContext,
     PreparedDocument,
+    analyze_document,
+    build_vectors,
     prepare_document,
     register_document,
 )
 from cbe_rag.storage.ddl import DocumentStatus
-from cbe_rag.storage.records import DocumentRecord
+from cbe_rag.storage.embedding import EmbeddingResult
+from cbe_rag.storage.records import ChunkVector, DocumentRecord
 
 TODAY = date(2026, 9, 29)
 SOURCE_URL = "https://sellercentral.amazon.com/help/hub/reference/GDZ8RCTRUZEH4PBX"
@@ -212,10 +216,13 @@ class TestPreparedFields:
 class RecordingMysqlStore:
     """记录写操作的假适配器，不连服务。"""
 
-    def __init__(self) -> None:
+    def __init__(self, siblings: list[str] | None = None) -> None:
         self.inserted: list[DocumentRecord] = []
         self.meta_updates: list[DocumentRecord] = []
         self.status_updates: list[tuple[str, DocumentStatus]] = []
+        self.chunks_written: list[tuple[str, list[Chunk]]] = []
+        self.sibling_lookups: list[tuple[str, str]] = []
+        self._siblings = siblings if siblings is not None else []
 
     def insert_document(
         self, record: DocumentRecord, *, now: Any = None
@@ -231,6 +238,17 @@ class RecordingMysqlStore:
         self, doc_id: str, status: DocumentStatus, *, now: Any = None
     ) -> None:
         self.status_updates.append((doc_id, status))
+
+    def replace_chunks(
+        self, doc_id: str, chunks: list[Chunk], *, now: Any = None
+    ) -> None:
+        self.chunks_written.append((doc_id, list(chunks)))
+
+    def supersede_siblings(
+        self, source_url: str, keep_doc_id: str, *, now: Any = None
+    ) -> list[str]:
+        self.sibling_lookups.append((source_url, keep_doc_id))
+        return list(self._siblings)
 
 
 def register(
@@ -361,3 +379,354 @@ class TestRegisterDocument:
         record, _ = register(tmp_path, RecordingMysqlStore())
 
         assert record.content_hash == file_content_hash(raw)
+
+
+def make_child(**overrides: Any) -> Chunk:
+    """造一个子块。"""
+    fields: dict[str, Any] = {
+        "chunk_id": "doc-1_c0000",
+        "doc_id": "doc-1",
+        "parent_id": "doc-1_p0000",
+        "level": ChunkLevel.CHILD,
+        "chunk_index": 0,
+        "text": "进口一站式服务适用于价值不超过 150 欧元的货物。",
+        "token_count": 20,
+        "start_offset": 0,
+        "end_offset": 25,
+    }
+    fields.update(overrides)
+    return Chunk(**fields)
+
+
+class FakeEmbeddingStore:
+    """假的嵌入适配器。
+
+    返回的向量带上序号（第 n 条就是 [n, n, n]），这样能验证向量与文本
+    没有错位——错位不会报错，只会让检索结果整体偏掉。
+    """
+
+    def __init__(self, vector_count: int | None = None) -> None:
+        self.encoded: list[list[str]] = []
+        self._vector_count = vector_count
+
+    def encode(self, texts: list[str]) -> EmbeddingResult:
+        self.encoded.append(list(texts))
+        count = self._vector_count if self._vector_count is not None else len(texts)
+        return EmbeddingResult(
+            dense=[[float(index)] * 3 for index in range(count)],
+            sparse=[{index: 1.0} for index in range(count)],
+        )
+
+
+class TestBuildVectors:
+    def test_encodes_the_child_texts(self) -> None:
+        embedding = FakeEmbeddingStore()
+        children = [make_child(text="第一段"), make_child(text="第二段", chunk_id="b")]
+
+        build_vectors(children, make_record("a" * 64), embedding)
+
+        assert embedding.encoded == [["第一段", "第二段"]]
+
+    def test_returns_one_vector_per_child(self) -> None:
+        embedding = FakeEmbeddingStore()
+        children = [
+            make_child(chunk_id="a"),
+            make_child(chunk_id="b"),
+            make_child(chunk_id="c"),
+        ]
+
+        vectors = build_vectors(children, make_record("a" * 64), embedding)
+
+        assert [vector.chunk_id for vector in vectors] == ["a", "b", "c"]
+
+    def test_vectors_are_not_shifted(self) -> None:
+        # 第 n 个子块应配第 n 条向量。错位不报错，只是检索结果整体偏掉。
+        embedding = FakeEmbeddingStore()
+        children = [make_child(chunk_id="a"), make_child(chunk_id="b")]
+
+        vectors = build_vectors(children, make_record("a" * 64), embedding)
+
+        assert vectors[0].dense == [0.0, 0.0, 0.0]
+        assert vectors[1].dense == [1.0, 1.0, 1.0]
+        assert vectors[0].sparse == {0: 1.0}
+        assert vectors[1].sparse == {1: 1.0}
+
+    def test_carries_the_parent_id(self) -> None:
+        # 检索召回子块后靠它回 MySQL 取父块全文
+        embedding = FakeEmbeddingStore()
+        children = [make_child(parent_id="doc-1_p0007")]
+
+        vectors = build_vectors(children, make_record("a" * 64), embedding)
+
+        assert vectors[0].parent_id == "doc-1_p0007"
+
+    def test_fills_the_filter_dimensions_from_the_record(self) -> None:
+        # 三个维度冗余进 Milvus，检索才不用先回 MySQL 查一遍
+        embedding = FakeEmbeddingStore()
+        record = make_record(
+            "a" * 64, country="DE", doc_type="policy", publisher="eu_commission"
+        )
+
+        vectors = build_vectors([make_child()], record, embedding)
+
+        assert vectors[0].country == "DE"
+        assert vectors[0].doc_type == "policy"
+        assert vectors[0].publisher == "eu_commission"
+
+    def test_empty_children_sends_nothing(self) -> None:
+        embedding = FakeEmbeddingStore()
+
+        assert build_vectors([], make_record("a" * 64), embedding) == []
+        assert embedding.encoded == []
+
+    def test_vector_count_mismatch_raises(self) -> None:
+        # 少了向量就该报错：zip 会静默丢掉末尾的子块，
+        # 那些内容在 MySQL 里有、向量库里没有，永远检索不到
+        embedding = FakeEmbeddingStore(vector_count=1)
+        children = [make_child(chunk_id="a"), make_child(chunk_id="b")]
+
+        with pytest.raises(ValueError, match="不符"):
+            build_vectors(children, make_record("a" * 64), embedding)
+
+    def test_extra_vectors_raise_too(self) -> None:
+        embedding = FakeEmbeddingStore(vector_count=3)
+        children = [make_child(chunk_id="a")]
+
+        with pytest.raises(ValueError, match="不符"):
+            build_vectors(children, make_record("a" * 64), embedding)
+
+
+class RecordingMilvusStore:
+    """记录写操作的假 Milvus 适配器，不连服务。"""
+
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+        self.upserted: list[list[ChunkVector]] = []
+
+    def delete_by_doc(self, doc_id: str) -> None:
+        self.deleted.append(doc_id)
+
+    def upsert_chunks(self, vectors: list[ChunkVector]) -> int:
+        self.upserted.append(list(vectors))
+        return len(vectors)
+
+
+class FakeCounter:
+    """按字符数折算的假分词计数。
+
+    切分只关心各块之间的相对大小，字符数够用，而且省掉加载真实分词器
+    的那一秒。
+    """
+
+    def count(self, text: str) -> int:
+        return len(text)
+
+    def count_all(self, texts: list[str]) -> list[int]:
+        return [len(text) for text in texts]
+
+
+def make_context(
+    mysql: RecordingMysqlStore | None = None,
+    milvus: RecordingMilvusStore | None = None,
+    embedding: FakeEmbeddingStore | None = None,
+) -> IndexingContext:
+    """造一份索引依赖，三个假实现都可按需替换。"""
+    return IndexingContext(
+        mysql=mysql if mysql is not None else RecordingMysqlStore(),
+        milvus=milvus if milvus is not None else RecordingMilvusStore(),
+        embedding=embedding if embedding is not None else FakeEmbeddingStore(),
+        counter=FakeCounter(),
+    )
+
+
+# 正文要够长：质量门禁有一条「总字符数不低于 200」的下限，
+# 用于拦住扫描件和解析出空壳的情况。样例太短会被当成解析失败。
+HTML_WITH_CONTENT = """<!doctype html>
+<html><body><div id="help-content">
+<h1>Import One-Stop Shop</h1>
+<p>进口一站式服务（Import One-Stop Shop，IOSS）自 2021 年 7 月 1 日起实施，
+适用于从第三国或第三地区向欧盟境内消费者销售、且价值不超过 150 欧元的货物。
+卖家在销售时代收增值税并通过 IOSS 申报，无需在每一个销售目的国分别注册税号。</p>
+<p>对于价值超过 150 欧元的货物不适用 IOSS，卖家需要按常规进口流程办理，
+由买方在进口时缴纳进口增值税。此时卖家应当在货物存放地或销售目的国
+注册增值税号，并按当地规定申报。</p>
+<p>注册 IOSS 需要提供企业注册信息、税务识别号，以及在欧盟境内的中介信息。
+使用亚马逊物流的卖家可以直接使用亚马逊提供的 IOSS 注册号，
+具体位置在卖家平台的税务设置页面。</p>
+</div></body></html>
+"""
+
+
+def write_html_file(tmp_path: Path, body: str = HTML_WITH_CONTENT) -> Path:
+    """写一个能被解析的 HTML 文件。
+
+    正文放在 help-content 容器里：站点选择器按域名配置，
+    sellercentral.amazon.com 只认这个容器，放在别处会被判成空文档。
+    """
+    path = tmp_path / "amazon-eu-vat-faq.html"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def analyze(
+    tmp_path: Path,
+    context: IndexingContext,
+    *,
+    body: str = HTML_WITH_CONTENT,
+    **meta_overrides: Any,
+) -> tuple[Any, DocumentRecord]:
+    """走一遍「准备 + 登记 + 解析入库」，返回结果与登记进去的记录。"""
+    document = make_document(write_html_file(tmp_path, body), **meta_overrides)
+    prepared = prepare_document(document, FakeMysqlStore())
+    record = register_document(document, prepared, context.mysql)
+    return analyze_document(document, record, context), record
+
+
+class TestMetadataGate:
+    def test_incomplete_metadata_is_not_indexed(self, tmp_path: Path) -> None:
+        # 切片进了向量库就会被检索到并挂进引用里
+        context = make_context()
+
+        _, record = analyze(tmp_path, context, publisher=None)
+
+        assert record.missing_fields == ("publisher",)
+        assert context.milvus.upserted == []
+        assert context.mysql.chunks_written == []
+
+    def test_incomplete_metadata_counts_as_handled(self, tmp_path: Path) -> None:
+        # 「没入库」不算失败——文档确实收下了，只是还差信息等人补
+        context = make_context()
+
+        result, _ = analyze(tmp_path, context, publisher=None)
+
+        assert result.ok is True
+        assert "publisher" in result.detail
+
+    def test_incomplete_metadata_leaves_the_status_alone(self, tmp_path: Path) -> None:
+        # 停在 pending 等人补齐，不该被拨成别的状态
+        context = make_context()
+
+        analyze(tmp_path, context, publisher=None)
+
+        assert context.mysql.status_updates == []
+
+
+class TestSuccessfulIndex:
+    def test_writes_both_levels_to_mysql(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        result, record = analyze(tmp_path, context)
+
+        assert len(context.mysql.chunks_written) == 1
+        doc_id, chunks = context.mysql.chunks_written[0]
+        assert doc_id == record.doc_id
+        assert len(chunks) == result.parent_count + result.child_count
+
+    def test_writes_only_children_to_milvus(self, tmp_path: Path) -> None:
+        # 父块不建向量，靠 parent_id 回 MySQL 取全文
+        context = make_context()
+
+        result, _ = analyze(tmp_path, context)
+
+        assert len(context.milvus.upserted[0]) == result.child_count
+
+    def test_clears_previous_vectors_before_writing(self, tmp_path: Path) -> None:
+        # 分块数量可能变少，光靠 upsert 清不掉多出来的那几条
+        context = make_context()
+
+        _, record = analyze(tmp_path, context)
+
+        assert context.milvus.deleted == [record.doc_id]
+
+    def test_marks_the_document_indexed(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        _, record = analyze(tmp_path, context)
+
+        assert (record.doc_id, DocumentStatus.INDEXED) in context.mysql.status_updates
+
+    def test_reports_ok_with_block_counts(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        result, _ = analyze(tmp_path, context)
+
+        assert result.ok is True
+        assert result.parent_count >= 1
+        assert result.child_count >= 1
+
+    def test_child_vectors_carry_the_filter_dimensions(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        analyze(tmp_path, context)
+        vector = context.milvus.upserted[0][0]
+
+        assert vector.country == "EU"
+        assert vector.doc_type == "faq"
+        assert vector.publisher == "amazon"
+
+    def test_child_vectors_point_back_at_a_parent_that_exists(self, tmp_path: Path) -> None:
+        # 检索召回子块后靠 parent_id 回 MySQL 取父块全文，
+        # 指向一个不存在的父块就等于拿不到上下文
+        context = make_context()
+
+        analyze(tmp_path, context)
+        _, chunks = context.mysql.chunks_written[0]
+        parent_ids = {
+            chunk.chunk_id for chunk in chunks if chunk.level is ChunkLevel.PARENT
+        }
+
+        assert parent_ids
+        assert all(
+            vector.parent_id in parent_ids for vector in context.milvus.upserted[0]
+        )
+
+
+class TestSiblingRetirement:
+    def test_retires_siblings_and_deletes_their_vectors(self, tmp_path: Path) -> None:
+        # 光改状态拦不住检索：Milvus 里没有 status 字段，
+        # 旧记录的向量照样会被召回
+        context = make_context(mysql=RecordingMysqlStore(siblings=["doc-old"]))
+
+        _, record = analyze(tmp_path, context)
+
+        assert context.mysql.sibling_lookups == [(SOURCE_URL, record.doc_id)]
+        assert context.milvus.deleted == [record.doc_id, "doc-old"]
+
+    def test_no_siblings_means_no_extra_deletes(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        _, record = analyze(tmp_path, context)
+
+        assert context.milvus.deleted == [record.doc_id]
+
+
+class TestParseFailure:
+    UNPARSABLE = "<!doctype html><html><body><div id='other'>正文在别的容器里</div></body></html>"
+
+    def test_unparsable_content_marks_needs_manual(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        result, record = analyze(tmp_path, context, body=self.UNPARSABLE)
+
+        assert result.ok is False
+        assert (
+            record.doc_id,
+            DocumentStatus.NEEDS_MANUAL,
+        ) in context.mysql.status_updates
+
+    def test_nothing_is_written_to_storage(self, tmp_path: Path) -> None:
+        context = make_context()
+
+        analyze(tmp_path, context, body=self.UNPARSABLE)
+
+        assert context.milvus.upserted == []
+        assert context.mysql.chunks_written == []
+
+    def test_message_names_the_tiers_that_were_tried(self, tmp_path: Path) -> None:
+        # 人工处理时最想知道机器试过什么、卡在哪
+        context = make_context()
+
+        result, _ = analyze(tmp_path, context, body=self.UNPARSABLE)
+
+        assert "html.selector" in result.detail
+        assert "交人工" in result.detail
