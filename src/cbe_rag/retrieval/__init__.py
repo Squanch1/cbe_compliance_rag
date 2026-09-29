@@ -13,6 +13,11 @@ from cbe_rag.retrieval.models import (
     SearchOutcome,
 )
 from cbe_rag.retrieval.search import build_filter, fold_by_parent, search
+from cbe_rag.retrieval.service import (
+    UncalibratedThresholdError,
+    is_evidence_sufficient,
+    retrieve,
+)
 
 __all__ = [
     "ContextError",
@@ -21,8 +26,11 @@ __all__ = [
     "RetrievalResult",
     "RetrievedParent",
     "SearchOutcome",
+    "UncalibratedThresholdError",
     "build_filter",
     "fold_by_parent",
+    "is_evidence_sufficient",
     "load_parents",
+    "retrieve",
     "search",
 ]
