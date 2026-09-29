@@ -122,7 +122,7 @@ CREATE TABLE documents (
     doc_type       VARCHAR(32)   NOT NULL COMMENT '文档类型代码，关联 dim_doc_type',
     effective_date DATE          NULL     COMMENT '生效日期，允许为空',
     collected_date DATE          NOT NULL COMMENT '采集日期',
-    status         VARCHAR(16)   NOT NULL COMMENT 'pending/ready/indexed/needs_manual/failed',
+    status         VARCHAR(16)   NOT NULL COMMENT 'pending/indexed/needs_manual/failed/superseded，仅 indexed 参与检索',
     parse_attempts JSON          NULL     COMMENT '各解析层的尝试记录，全部失败时供人工排查',
     missing_fields JSON          NULL     COMMENT '缺失的必填字段名清单',
     raw_path       VARCHAR(1024) NOT NULL COMMENT '原始文件绝对路径，见 CLAUDE.md 5.2 路径约定',
@@ -139,15 +139,14 @@ CREATE TABLE documents (
 **`status` 状态机**
 
 ```
-pending  ──补齐必填元数据──>  ready
-                                │
-                ┌───────────────┼───────────────┐
-                │               │               │
-          解析与索引成功    解析各层全不合格   索引过程出错
-                │               │               │
-                v               v               v
-            indexed       needs_manual        failed
+登记（元数据齐备）──> 解析与索引 ──┬─ 成功 ──────────> indexed ──出现新版本──> superseded
+                                   ├─ 各层全不合格 ──> needs_manual
+                                   └─ 过程出错 ──────> failed
+
+登记（元数据不齐）──> pending ──补齐必填元数据后重跑导入──> 回到「解析与索引」
 ```
+
+**只有 `indexed` 参与检索**，其余四个状态都不会被召回。检索层的过滤条件写成 `status == 'indexed'`，而不是逐个排除其余状态——以后新增状态时检索代码不必跟着改，也就不会漏。
 
 必填元数据指 `source_url`、`country`、`doc_type`、`publisher`。缺任一项时 `status = pending`，`missing_fields` 记录缺了哪几个。门禁细节见 `02-architecture.md` 6.2.1。
 
@@ -162,7 +161,13 @@ pending  ──补齐必填元数据──>  ready
 
 **`missing_fields` 用 JSON 而非逗号分隔字符串**：需要按字段名查询「哪些文档缺 source_url」，JSON 类型可以建函数索引，字符串做不到。
 
-**`content_hash` 加唯一约束**：同一份文件重复导入时直接冲突报错，而不是产生两条文档记录。文档内容更新时 hash 变化，走新记录加旧记录下线的流程。
+**`content_hash` 加唯一约束**：同一份文件重复导入时不会产生第二条记录。
+
+判重分两步：**先按 hash 查库，命中就跳过**；唯一约束是并发场景下的兜底，不是常规判重手段。顺序不能颠倒——`doc_id` 是每次运行新生成的 UUID，若直接插入靠约束拦截，同一份文档会白白消耗一批 UUID；更危险的是，一旦防护有漏，新 `doc_id` 会让 `chunk_id` 另起一套前缀，向量库里同一份文档出现两组向量。**跳过时必须复用库里原有的 `doc_id`。**
+
+**hash 算的是文件字节，不是解析后的正文。** 这样判重发生在解析之前，重复文件省下一次完整解析。副作用是同一份内容的 PDF 版与 HTML 版会被当作两份独立文档——这是对的，它们的来源与解析结构本就不同，引用时需区分。
+
+文档内容更新时 hash 变化，走「新记录入库 + 旧记录标 `superseded`」的流程。旧记录保留，便于追溯这份文档换过几次、何时换的；但不再参与检索，避免过时内容被引用。
 
 ### 3.3 `chunks` 分块表
 

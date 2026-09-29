@@ -106,23 +106,30 @@
 ### 4.1 离线链路
 
 ```
-1. fetcher       读取 data/raw/ 下的原始文件，登记 source_url 与 collected_date。
-                 文档进入流水线时生成 doc_id，后续三个存储引用同一个值
-2. mysql_store   写入文档元数据行，按元数据齐备情况设置 status
-3. services      门禁：status 非 ready 的文档在此终止，不进入向量库（见 6.2）
-4. router        判类型（按文件头）-> 探测难度 -> 组装解析链 -> 逐层解析并评估质量
+1. fetcher       读取 data/raw/ 下的原始文件，登记 source_url 与 collected_date
+2. indexing      算文件 content_hash 并查库判重（见 03-data-model.md 3.2），
+                 判定为「需要处理」时才生成 doc_id：
+                   ├─ 命中且元数据未变   -> 跳过，流程到此为止
+                   ├─ 命中但元数据有差异 -> 只更新元数据，不重切块不重嵌入，到此为止
+                   ├─ 未命中但同 source_url 有活跃记录 -> 旧记录标 superseded，继续往下
+                   └─ 其余               -> 继续往下
+3. mysql_store   写入文档元数据行，按元数据齐备情况设置 status
+4. services      门禁：元数据不齐（status = pending）的文档在此终止，不进入向量库（见 6.2）
+5. router        判类型（按文件头）-> 探测难度 -> 组装解析链 -> 逐层解析并评估质量
                    ├─ 某层通过     -> 产出 ParsedDocument
                    └─ 全部不合格   -> status = needs_manual，记下各层失败原因，终止
-5. mongo_store   写入解析产物与各层尝试记录，便于回溯解析质量
-6. chunker       切分为父块与子块两级，子块携带 parent_id 与段落定位
-7. embedding     批量向量化，一次调用同时产出稠密与稀疏两路
-8. milvus_store  写入稠密向量、稀疏向量与检索用标量字段
-9. mysql_store   更新文档状态为 indexed
+6. mongo_store   写入解析产物与各层尝试记录，便于回溯解析质量
+7. chunker       切分为父块与子块两级，子块携带 parent_id 与段落定位
+8. embedding     批量向量化，一次调用同时产出稠密与稀疏两路
+9. milvus_store  写入稠密向量、稀疏向量与检索用标量字段
+10. mysql_store  更新文档状态为 indexed
 ```
 
-**`doc_id` 在进流水线时生成，不是入库时生成。** 第 5 步写入 MongoDB 时 MySQL 那边可能还没有记录，两边要靠同一个 `doc_id` 关联，因此它必须更早产生。
+**`doc_id` 在判重通过后、进解析流程之前生成，不是入库时生成。** 第 6 步写入 MongoDB 时 MySQL 那边可能还没有记录，两边要靠同一个 `doc_id` 关联，因此它必须早于解析产生。
 
-**幂等性要求**：以 `doc_id` 为准，重建同一文档时先删后写，不产生重复向量。
+**判重命中时不得生成新 `doc_id`**，必须复用库里原有的值：`chunk_id` 由 `doc_id` 派生（`{doc_id}_pXXXX`），换了 `doc_id` 就等于在向量库里另起一套前缀，同一份文档会出现两组向量，而旧的那组还删不掉。
+
+**幂等性要求**：以 `content_hash` 识别是否为同一份文件，以 `doc_id` 为准重建——同一 `doc_id` 重新索引时先删后写，不产生重复向量。
 
 ### 4.2 在线链路
 
@@ -218,16 +225,17 @@ HTML 与 PDF 解析后产出同一种结构 `ParsedDocument`，下游的切分�
 ```
 MySQL   文档记录可存在，status = pending，并记录缺失字段清单
           |
-          | 补齐必填元数据
+          | 补齐必填元数据，重跑导入
           v
-MySQL   status = ready
+MySQL   状态由 pending 转为 indexed，解析与索引走完整流程
           |
-          | 索引流程
           v
-Milvus  只接收 status = ready 的文档切片
+Milvus  只接收元数据齐备的文档切片
 ```
 
 **必填元数据指 `source_url` 与三个过滤维度（`country`、`doc_type`、`publisher`）。** 任一缺失，该文档的切片不进入向量库，因此永远不会被检索到、不会被引用。但文档记录本身保留在 MySQL 中，可随时查询「还差哪些文档没补齐」，不会静默丢数据。
+
+补齐元数据后**重跑导入即可**，不需要额外的「提升状态」命令：重跑时按 `content_hash` 判重命中同一条记录，元数据有变则更新，然后走正常流程。**状态值由处理结果决定，不由人工设置。**
 
 #### 6.2.2 effective_date 为空的处理
 
