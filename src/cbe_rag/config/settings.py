@@ -89,6 +89,11 @@ class RedisConfig(_Section):
         description="键前缀，实例由多个项目共用，不可为空",
     )
     session_ttl_seconds: int = Field(default=3600, gt=0, description="会话上下文过期秒数")
+    session_max_messages: int = Field(
+        default=20,
+        gt=0,
+        description="会话上下文保留的消息条数上限，超出丢弃最早的",
+    )
     cache_ttl_seconds: int = Field(default=600, gt=0, description="问答缓存过期秒数")
     lock_ttl_seconds: int = Field(default=300, gt=0, description="索引构建锁过期秒数")
     timeout_seconds: float = Field(default=5.0, gt=0)
