@@ -79,6 +79,7 @@ python -m pytest
 | `docs/spec/01-scope.md` | 范围边界：做什么、不做什么 |
 | `docs/spec/02-architecture.md` | 分层架构与模块职责 |
 | `docs/spec/03-data-model.md` | 数据模型与存储分工 |
+| `docs/parsing-decisions.md` | 解析决策记录：阈值来源、候选方案对比与被否决的选项 |
 
 ## 许可证
 

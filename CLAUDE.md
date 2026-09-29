@@ -176,6 +176,8 @@ Spec 是开发的边界约束，与本文档冲突时以 Spec 为准。
 | `docs/spec/04-api-contract.md` | 接口契约 |
 | `docs/spec/05-acceptance.md` | 验收标准与里程碑 |
 
+另有 `docs/parsing-decisions.md` 记录解析层的**决策依据**：每个阈值从哪来、对比过哪些候选方案、否决了哪些。改动 `ingestion/parser/` 下的逻辑前先读它，避免把当初踩过的坑再踩一遍。
+
 ## 10. 已知环境限制
 
 - 本机控制台默认编码为 cp936，输出中文会乱码。所有 `open()` 显式指定 `encoding="utf-8"`，运行 Python 前设置 `PYTHONUTF8=1`
