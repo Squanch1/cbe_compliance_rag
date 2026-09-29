@@ -26,9 +26,9 @@
 | 项 | 值 |
 |---|---|
 | Database | `cbe_compliance` |
-| Collection | `chunks_v1` |
+| Collection | `cbe_chunks_v1` |
 
-**不得写入 `default` 库。** Collection 名带版本后缀，schema 变更时建 `chunks_v2` 而非原地改，旧集合保留到新集合验证通过再删。
+**不得写入 `default` 库。** Collection 名带版本后缀，schema 变更时建 `cbe_chunks_v2` 而非原地改，旧集合保留到新集合验证通过再删。
 
 ### 2.2 字段定义
 

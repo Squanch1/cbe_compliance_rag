@@ -25,7 +25,7 @@ def make_config() -> MilvusConfig:
         host="192.168.88.101",
         port=19530,
         database="cbe_compliance",
-        collection="chunks_v1",
+        collection="cbe_chunks_v1",
     )
 
 
@@ -288,10 +288,10 @@ class TestCreateCollection:
         store, db_client, _ = build_db_store(collections=())
 
         assert store.create_collection(dense_dim=1024) is True
-        assert [name for name, _ in db_client.created] == ["chunks_v1"]
+        assert [name for name, _ in db_client.created] == ["cbe_chunks_v1"]
 
     def test_skips_when_present(self) -> None:
-        store, db_client, _ = build_db_store(collections=("chunks_v1",))
+        store, db_client, _ = build_db_store(collections=("cbe_chunks_v1",))
 
         assert store.create_collection(dense_dim=1024) is False
         assert db_client.created == []

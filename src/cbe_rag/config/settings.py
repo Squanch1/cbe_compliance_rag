@@ -70,7 +70,7 @@ class MilvusConfig(_Section):
         description="独立 database 名，不得写入 default",
     )
     collection: str = Field(
-        default="chunks_v1",
+        default="cbe_chunks_v1",
         min_length=1,
         description="子块向量集合名，带版本后缀",
     )
