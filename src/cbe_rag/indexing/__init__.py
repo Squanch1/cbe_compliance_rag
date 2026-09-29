@@ -13,17 +13,34 @@ from cbe_rag.indexing.models import (
     ImportReport,
     count_by_action,
 )
-from cbe_rag.indexing.pipeline import PreparedDocument, prepare_document
+from cbe_rag.indexing.pipeline import (
+    AnalysisResult,
+    IndexingContext,
+    PreparedDocument,
+    analyze_document,
+    build_vectors,
+    index_document,
+    prepare_document,
+    register_document,
+)
+from cbe_rag.indexing.service import import_documents
 
 __all__ = [
+    "AnalysisResult",
     "Decision",
     "DocumentOutcome",
     "HashingError",
     "ImportAction",
     "ImportReport",
+    "IndexingContext",
     "PreparedDocument",
+    "analyze_document",
+    "build_vectors",
     "count_by_action",
     "decide",
     "file_content_hash",
+    "import_documents",
+    "index_document",
     "prepare_document",
+    "register_document",
 ]

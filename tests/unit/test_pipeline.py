@@ -1,108 +1,44 @@
-"""判重准备的单元测试。
+"""索引流程的单元测试。
 
-MySQL 用假的适配器，不连服务；文件哈希读的是临时目录里的真文件——
-「哈希算的到底是什么」正是这一步的关键，换成假哈希就测不出来了。
+MySQL、Milvus 与嵌入都用假实现，不连服务；文件哈希读的是临时目录里的
+真文件——「哈希算的到底是什么」正是判重的关键，换成假哈希就测不出来了。
+
+判错不会报错，只会让同一份文档重复入库，或者让它悄悄不再被检索到，
+所以每条分支都要有一条测试。
 """
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from cbe_rag.ingestion.fetcher.collector import CollectedDocument
-from cbe_rag.ingestion.parser.schema import Chunk, ChunkLevel, DocumentMeta
 from cbe_rag.indexing.hashing import file_content_hash
 from cbe_rag.indexing.models import Decision, ImportAction
 from cbe_rag.indexing.pipeline import (
-    IndexingContext,
     PreparedDocument,
-    analyze_document,
     build_vectors,
     index_document,
     prepare_document,
     register_document,
 )
 from cbe_rag.storage.ddl import DocumentStatus
-from cbe_rag.storage.embedding import EmbeddingResult
-from cbe_rag.storage.records import ChunkVector, DocumentRecord
-
-TODAY = date(2026, 9, 29)
-SOURCE_URL = "https://sellercentral.amazon.com/help/hub/reference/GDZ8RCTRUZEH4PBX"
-
-
-def write_document_file(
-    tmp_path: Path,
-    content: str = "欧洲增值税常见问题",
-    name: str = "amazon-eu-vat-faq.html",
-) -> Path:
-    """写一个真实的文件，哈希读的就是它。"""
-    path = tmp_path / name
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
-def make_document(raw_path: Path, **overrides: Any) -> CollectedDocument:
-    """造一份采集到的文档，元数据字段可按需覆盖。"""
-    fields: dict[str, Any] = {
-        "doc_id": "new-doc-id",
-        "title": "欧洲增值税常见问题",
-        "collected_date": TODAY,
-        "source_url": SOURCE_URL,
-        "publisher": "amazon",
-        "country": "EU",
-        "doc_type": "faq",
-        "effective_date": None,
-        "platform": "amazon",
-    }
-    fields.update(overrides)
-    return CollectedDocument(raw_path=raw_path, meta=DocumentMeta(**fields))
-
-
-def make_record(content_hash: str, **overrides: Any) -> DocumentRecord:
-    """造一条库里的记录，字段可按需覆盖。"""
-    fields: dict[str, Any] = {
-        "doc_id": "existing-doc-id",
-        "content_hash": content_hash,
-        "status": DocumentStatus.INDEXED,
-        "title": "欧洲增值税常见问题",
-        "platform": "amazon",
-        "source_url": SOURCE_URL,
-        "publisher": "amazon",
-        "country": "EU",
-        "doc_type": "faq",
-        "effective_date": None,
-        "collected_date": TODAY,
-        "raw_path": "C:/data/raw/amazon-eu-vat-faq.html",
-    }
-    fields.update(overrides)
-    return DocumentRecord(**fields)
-
-
-class FakeMysqlStore:
-    """假的 MySQL 适配器，只实现判重要用到的两个查询。
-
-    记录查询顺序，用来验证「哈希命中时不该再查 URL」这个取舍。
-    """
-
-    def __init__(
-        self,
-        by_hash: DocumentRecord | None = None,
-        by_url: DocumentRecord | None = None,
-    ) -> None:
-        self._by_hash = by_hash
-        self._by_url = by_url
-        self.queries: list[str] = []
-
-    def get_document_by_hash(self, content_hash: str) -> DocumentRecord | None:
-        self.queries.append("hash")
-        return self._by_hash
-
-    def find_active_by_source_url(self, source_url: str) -> DocumentRecord | None:
-        self.queries.append("url")
-        return self._by_url
+from indexing_fakes import (
+    HTML_WITH_CONTENT,
+    SOURCE_URL,
+    FakeEmbeddingStore,
+    FakeMysqlStore,
+    RecordingMilvusStore,
+    RecordingMysqlStore,
+    analyze,
+    make_child,
+    make_context,
+    make_document,
+    make_record,
+    register,
+    write_document_file,
+    write_html_file,
+)
 
 
 class TestActions:
@@ -214,80 +150,11 @@ class TestPreparedFields:
         assert prepared_first.content_hash == prepared_second.content_hash
 
 
-class RecordingMysqlStore:
-    """记录读写操作的假适配器，不连服务。
-
-    查询结果按需注入：不传就是「库里什么都没有」，也就是全新文档。
-    """
-
-    def __init__(
-        self,
-        siblings: list[str] | None = None,
-        by_hash: DocumentRecord | None = None,
-        by_url: DocumentRecord | None = None,
-    ) -> None:
-        self.inserted: list[DocumentRecord] = []
-        self.meta_updates: list[DocumentRecord] = []
-        self.status_updates: list[tuple[str, DocumentStatus]] = []
-        self.chunks_written: list[tuple[str, list[Chunk]]] = []
-        self.sibling_lookups: list[tuple[str, str]] = []
-        self._siblings = siblings if siblings is not None else []
-        self._by_hash = by_hash
-        self._by_url = by_url
-
-    def get_document_by_hash(self, content_hash: str) -> DocumentRecord | None:
-        return self._by_hash
-
-    def find_active_by_source_url(self, source_url: str) -> DocumentRecord | None:
-        return self._by_url
-
-    def insert_document(
-        self, record: DocumentRecord, *, now: Any = None
-    ) -> None:
-        self.inserted.append(record)
-
-    def update_document_meta(
-        self, record: DocumentRecord, *, now: Any = None
-    ) -> None:
-        self.meta_updates.append(record)
-
-    def update_document_status(
-        self, doc_id: str, status: DocumentStatus, *, now: Any = None
-    ) -> None:
-        self.status_updates.append((doc_id, status))
-
-    def replace_chunks(
-        self, doc_id: str, chunks: list[Chunk], *, now: Any = None
-    ) -> None:
-        self.chunks_written.append((doc_id, list(chunks)))
-
-    def supersede_siblings(
-        self, source_url: str, keep_doc_id: str, *, now: Any = None
-    ) -> list[str]:
-        self.sibling_lookups.append((source_url, keep_doc_id))
-        return list(self._siblings)
-
-
-def register(
-    tmp_path: Path,
-    mysql: RecordingMysqlStore,
-    *,
-    by_hash: DocumentRecord | None = None,
-    by_url: DocumentRecord | None = None,
-    **meta_overrides: Any,
-) -> tuple[DocumentRecord, RecordingMysqlStore]:
-    """走一遍「准备 + 登记」，返回登记进去的记录。"""
-    raw = write_document_file(tmp_path)
-    document = make_document(raw, **meta_overrides)
-    prepared = prepare_document(
-        document, FakeMysqlStore(by_hash=by_hash, by_url=by_url)
-    )
-    return register_document(document, prepared, mysql), mysql
-
-
 class TestRegisterDocument:
     def test_new_document_is_inserted(self, tmp_path: Path) -> None:
-        record, mysql = register(tmp_path, RecordingMysqlStore())
+        mysql = RecordingMysqlStore()
+
+        record = register(tmp_path, mysql)
 
         assert mysql.inserted == [record]
         assert mysql.meta_updates == []
@@ -295,13 +162,13 @@ class TestRegisterDocument:
 
     def test_new_document_starts_as_pending(self, tmp_path: Path) -> None:
         # 解析结果还不知道，先记 pending；跑成功才改成 indexed
-        record, _ = register(tmp_path, RecordingMysqlStore())
+        record = register(tmp_path, RecordingMysqlStore())
 
         assert record.status is DocumentStatus.PENDING
 
     def test_new_document_gets_a_fresh_doc_id(self, tmp_path: Path) -> None:
-        first, _ = register(tmp_path, RecordingMysqlStore())
-        second, _ = register(tmp_path, RecordingMysqlStore())
+        first = register(tmp_path, RecordingMysqlStore())
+        second = register(tmp_path, RecordingMysqlStore())
 
         assert first.doc_id != second.doc_id
         assert len(first.doc_id) == 36
@@ -313,10 +180,9 @@ class TestRegisterDocument:
         existing = make_record(
             file_content_hash(raw), status=DocumentStatus.PENDING, doc_id="doc-old"
         )
+        mysql = RecordingMysqlStore()
 
-        record, mysql = register(
-            tmp_path, RecordingMysqlStore(), by_hash=existing
-        )
+        record = register(tmp_path, mysql, by_hash=existing)
 
         assert record.doc_id == "doc-old"
         assert mysql.inserted == []
@@ -326,16 +192,16 @@ class TestRegisterDocument:
         existing = make_record(
             file_content_hash(raw), status=DocumentStatus.FAILED, doc_id="doc-old"
         )
+        mysql = RecordingMysqlStore()
 
-        _, mysql = register(tmp_path, RecordingMysqlStore(), by_hash=existing)
+        register(tmp_path, mysql, by_hash=existing)
 
         assert len(mysql.meta_updates) == 1
         assert mysql.status_updates == [("doc-old", DocumentStatus.PENDING)]
 
     def test_reindex_without_matched_record_raises(self, tmp_path: Path) -> None:
         # 判重结果自相矛盾时当场失败，不要写出半条记录
-        raw = write_document_file(tmp_path)
-        document = make_document(raw)
+        document = make_document(write_document_file(tmp_path))
         prepared = prepare_document(document, FakeMysqlStore())
         broken = PreparedDocument(
             document=document,
@@ -350,7 +216,7 @@ class TestRegisterDocument:
         assert mysql.inserted == []
 
     def test_record_carries_the_manifest_metadata(self, tmp_path: Path) -> None:
-        record, _ = register(tmp_path, RecordingMysqlStore())
+        record = register(tmp_path, RecordingMysqlStore())
 
         assert record.title == "欧洲增值税常见问题"
         assert record.source_url == SOURCE_URL
@@ -361,31 +227,33 @@ class TestRegisterDocument:
 
     def test_raw_path_is_stored_as_a_string(self, tmp_path: Path) -> None:
         # 表里那列是 VARCHAR，存成 Path 对象的话驱动不知道怎么办
-        record, _ = register(tmp_path, RecordingMysqlStore())
+        record = register(tmp_path, RecordingMysqlStore())
 
         assert isinstance(record.raw_path, str)
         assert record.raw_path.endswith("amazon-eu-vat-faq.html")
 
     def test_complete_metadata_leaves_missing_fields_empty(self, tmp_path: Path) -> None:
-        record, _ = register(tmp_path, RecordingMysqlStore())
+        record = register(tmp_path, RecordingMysqlStore())
 
         assert record.missing_fields == ()
 
     def test_incomplete_metadata_is_recorded(self, tmp_path: Path) -> None:
         # 缺哪几项要落到库里，否则手工表里的空缺没人看得见
-        record, _ = register(tmp_path, RecordingMysqlStore(), publisher=None)
+        record = register(tmp_path, RecordingMysqlStore(), publisher=None)
 
         assert record.missing_fields == ("publisher",)
 
     def test_incomplete_metadata_is_still_registered(self, tmp_path: Path) -> None:
         # 门禁在下一步才拦，登记本身照做——这样才查得到「还差哪些」
-        record, mysql = register(tmp_path, RecordingMysqlStore(), country=None)
+        mysql = RecordingMysqlStore()
+
+        record = register(tmp_path, mysql, country=None)
 
         assert mysql.inserted == [record]
 
     def test_effective_date_may_be_empty(self, tmp_path: Path) -> None:
         # 很多欧盟指南不标生效日期，它不算必填
-        record, _ = register(tmp_path, RecordingMysqlStore(), effective_date=None)
+        record = register(tmp_path, RecordingMysqlStore(), effective_date=None)
 
         assert record.effective_date is None
         assert record.missing_fields == ()
@@ -393,46 +261,9 @@ class TestRegisterDocument:
     def test_content_hash_is_carried(self, tmp_path: Path) -> None:
         raw = write_document_file(tmp_path)
 
-        record, _ = register(tmp_path, RecordingMysqlStore())
+        record = register(tmp_path, RecordingMysqlStore())
 
         assert record.content_hash == file_content_hash(raw)
-
-
-def make_child(**overrides: Any) -> Chunk:
-    """造一个子块。"""
-    fields: dict[str, Any] = {
-        "chunk_id": "doc-1_c0000",
-        "doc_id": "doc-1",
-        "parent_id": "doc-1_p0000",
-        "level": ChunkLevel.CHILD,
-        "chunk_index": 0,
-        "text": "进口一站式服务适用于价值不超过 150 欧元的货物。",
-        "token_count": 20,
-        "start_offset": 0,
-        "end_offset": 25,
-    }
-    fields.update(overrides)
-    return Chunk(**fields)
-
-
-class FakeEmbeddingStore:
-    """假的嵌入适配器。
-
-    返回的向量带上序号（第 n 条就是 [n, n, n]），这样能验证向量与文本
-    没有错位——错位不会报错，只会让检索结果整体偏掉。
-    """
-
-    def __init__(self, vector_count: int | None = None) -> None:
-        self.encoded: list[list[str]] = []
-        self._vector_count = vector_count
-
-    def encode(self, texts: list[str]) -> EmbeddingResult:
-        self.encoded.append(list(texts))
-        count = self._vector_count if self._vector_count is not None else len(texts)
-        return EmbeddingResult(
-            dense=[[float(index)] * 3 for index in range(count)],
-            sparse=[{index: 1.0} for index in range(count)],
-        )
 
 
 class TestBuildVectors:
@@ -511,107 +342,6 @@ class TestBuildVectors:
 
         with pytest.raises(ValueError, match="不符"):
             build_vectors(children, make_record("a" * 64), embedding)
-
-
-class RecordingMilvusStore:
-    """记录写操作的假 Milvus 适配器，不连服务。"""
-
-    def __init__(self, synced: int = 1) -> None:
-        self.deleted: list[str] = []
-        self.upserted: list[list[ChunkVector]] = []
-        self.scalar_updates: list[dict[str, Any]] = []
-        self._synced = synced
-
-    def delete_by_doc(self, doc_id: str) -> None:
-        self.deleted.append(doc_id)
-
-    def upsert_chunks(self, vectors: list[ChunkVector]) -> int:
-        self.upserted.append(list(vectors))
-        return len(vectors)
-
-    def update_scalar_fields(
-        self, doc_id: str, *, country: str, doc_type: str, publisher: str
-    ) -> int:
-        self.scalar_updates.append(
-            {
-                "doc_id": doc_id,
-                "country": country,
-                "doc_type": doc_type,
-                "publisher": publisher,
-            }
-        )
-        return self._synced
-
-
-class FakeCounter:
-    """按字符数折算的假分词计数。
-
-    切分只关心各块之间的相对大小，字符数够用，而且省掉加载真实分词器
-    的那一秒。
-    """
-
-    def count(self, text: str) -> int:
-        return len(text)
-
-    def count_all(self, texts: list[str]) -> list[int]:
-        return [len(text) for text in texts]
-
-
-def make_context(
-    mysql: RecordingMysqlStore | None = None,
-    milvus: RecordingMilvusStore | None = None,
-    embedding: FakeEmbeddingStore | None = None,
-) -> IndexingContext:
-    """造一份索引依赖，三个假实现都可按需替换。"""
-    return IndexingContext(
-        mysql=mysql if mysql is not None else RecordingMysqlStore(),
-        milvus=milvus if milvus is not None else RecordingMilvusStore(),
-        embedding=embedding if embedding is not None else FakeEmbeddingStore(),
-        counter=FakeCounter(),
-    )
-
-
-# 正文要够长：质量门禁有一条「总字符数不低于 200」的下限，
-# 用于拦住扫描件和解析出空壳的情况。样例太短会被当成解析失败。
-HTML_WITH_CONTENT = """<!doctype html>
-<html><body><div id="help-content">
-<h1>Import One-Stop Shop</h1>
-<p>进口一站式服务（Import One-Stop Shop，IOSS）自 2021 年 7 月 1 日起实施，
-适用于从第三国或第三地区向欧盟境内消费者销售、且价值不超过 150 欧元的货物。
-卖家在销售时代收增值税并通过 IOSS 申报，无需在每一个销售目的国分别注册税号。</p>
-<p>对于价值超过 150 欧元的货物不适用 IOSS，卖家需要按常规进口流程办理，
-由买方在进口时缴纳进口增值税。此时卖家应当在货物存放地或销售目的国
-注册增值税号，并按当地规定申报。</p>
-<p>注册 IOSS 需要提供企业注册信息、税务识别号，以及在欧盟境内的中介信息。
-使用亚马逊物流的卖家可以直接使用亚马逊提供的 IOSS 注册号，
-具体位置在卖家平台的税务设置页面。</p>
-</div></body></html>
-"""
-
-
-def write_html_file(tmp_path: Path, body: str = HTML_WITH_CONTENT) -> Path:
-    """写一个能被解析的 HTML 文件。
-
-    正文放在 help-content 容器里：站点选择器按域名配置，
-    sellercentral.amazon.com 只认这个容器，放在别处会被判成空文档。
-    """
-    path = tmp_path / "amazon-eu-vat-faq.html"
-    path.write_text(body, encoding="utf-8")
-    return path
-
-
-def analyze(
-    tmp_path: Path,
-    context: IndexingContext,
-    *,
-    body: str = HTML_WITH_CONTENT,
-    **meta_overrides: Any,
-) -> tuple[Any, DocumentRecord]:
-    """走一遍「准备 + 登记 + 解析入库」，返回结果与登记进去的记录。"""
-    document = make_document(write_html_file(tmp_path, body), **meta_overrides)
-    prepared = prepare_document(document, FakeMysqlStore())
-    record = register_document(document, prepared, context.mysql)
-    return analyze_document(document, record, context), record
 
 
 class TestMetadataGate:
@@ -696,7 +426,9 @@ class TestSuccessfulIndex:
         assert vector.doc_type == "faq"
         assert vector.publisher == "amazon"
 
-    def test_child_vectors_point_back_at_a_parent_that_exists(self, tmp_path: Path) -> None:
+    def test_child_vectors_point_back_at_a_parent_that_exists(
+        self, tmp_path: Path
+    ) -> None:
         # 检索召回子块后靠 parent_id 回 MySQL 取父块全文，
         # 指向一个不存在的父块就等于拿不到上下文
         context = make_context()
@@ -704,7 +436,9 @@ class TestSuccessfulIndex:
         analyze(tmp_path, context)
         _, chunks = context.mysql.chunks_written[0]
         parent_ids = {
-            chunk.chunk_id for chunk in chunks if chunk.level is ChunkLevel.PARENT
+            chunk.chunk_id
+            for chunk in chunks
+            if chunk.level.value == "parent"
         }
 
         assert parent_ids
@@ -733,7 +467,12 @@ class TestSiblingRetirement:
 
 
 class TestParseFailure:
-    UNPARSABLE = "<!doctype html><html><body><div id='other'>正文在别的容器里</div></body></html>"
+    # 正文不在 help-content 容器里，两层解析都拿不到内容
+    UNPARSABLE = (
+        "<!doctype html><html><body>"
+        "<div id='other'>正文在别的容器里，选择器取不到</div>"
+        "</body></html>"
+    )
 
     def test_unparsable_content_marks_needs_manual(self, tmp_path: Path) -> None:
         context = make_context()

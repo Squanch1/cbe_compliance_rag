@@ -55,10 +55,14 @@ class DocumentOutcome:
     """一份文档处理完的结果。
 
     detail 是给人看的一句话：成功时说清做了什么，失败时说清卡在哪。
+
+    action 为 None 表示还没判出动作就失败了——异常可能发生在算哈希或
+    查库那一步，那时确实还不知道这份文档属于哪种情况，编一个动作填上
+    只会让报告读起来更糊涂。
     """
 
     file_name: str
-    action: ImportAction
+    action: ImportAction | None
     ok: bool
     detail: str
     doc_id: str | None = None
