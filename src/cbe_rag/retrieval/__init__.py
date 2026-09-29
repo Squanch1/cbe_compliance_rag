@@ -4,20 +4,25 @@
 再取回父块全文与引用元数据。
 """
 
+from cbe_rag.retrieval.context import ContextError, load_parents
 from cbe_rag.retrieval.models import (
-    ChunkHit,
     ParentHit,
     RetrievalQuery,
     RetrievalResult,
     RetrievedParent,
     SearchOutcome,
 )
+from cbe_rag.retrieval.search import build_filter, fold_by_parent, search
 
 __all__ = [
-    "ChunkHit",
+    "ContextError",
     "ParentHit",
     "RetrievalQuery",
     "RetrievalResult",
     "RetrievedParent",
     "SearchOutcome",
+    "build_filter",
+    "fold_by_parent",
+    "load_parents",
+    "search",
 ]
