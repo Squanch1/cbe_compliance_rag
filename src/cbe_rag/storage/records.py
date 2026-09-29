@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
@@ -47,6 +47,33 @@ class DocumentRecord:
     # 每条记「用哪个工具、为什么没过」，外加质量评估的原始分数：调阈值时
     # 要看分布，而分布只能从这些分数里来。
     parse_attempts: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class Dimension:
+    """维度表里的一行。
+
+    三张维度表的字段一致（代码、中英文名），因此共用一个类型；发布机构
+    那张多一个 official_url，界面用不上，不在这里出现。
+    """
+
+    code: str
+    name_zh: str
+    name_en: str
+
+
+@dataclass(frozen=True)
+class Dimensions:
+    """三张维度表的可用取值，供界面渲染选项。
+
+    **代码与中文名都要带上**：界面显示中文给使用者看，提交的却是代码——
+    代码才是后端拼进检索表达式的东西。只给中文名的话，提交过去就是错的；
+    只给代码，界面上就是现在这样一堆英文。
+    """
+
+    countries: list[Dimension] = field(default_factory=list)
+    doc_types: list[Dimension] = field(default_factory=list)
+    publishers: list[Dimension] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -19,11 +19,8 @@ import streamlit as st
 
 from api_client import ApiError, BackendClient
 
-# 与后端 dim_country 的种子数据一致。演示界面先写死；维度表可查询之后
-# 改成从后端拉。
-COUNTRIES = ["EU", "DE", "FR", "IT", "ES", "NL", "PL"]
-DOC_TYPES = ["guideline", "regulation", "policy", "faq"]
-PUBLISHERS = ["amazon", "eu_commission"]
+# 下拉里「不限制」那一项。取值是代码，显示是中文——两者不能混。
+UNRESTRICTED = "不限"
 
 # 首屏的建议问题。挑的是语料里确实有答案、且能体现「引用到具体段落」的
 # 几类问法——最后一条是语料里没有的，用来看拒答长什么样。
@@ -51,6 +48,37 @@ def backend() -> BackendClient:
     每次新建客户端等于每次重配一遍连接。
     """
     return BackendClient()
+
+
+@st.cache_resource
+def dimensions() -> dict[str, list[dict[str, str]]]:
+    """维度取值：代码配中英文名。
+
+    **拉不到时返回空字典而不是抛错**：后端没起时整个页面都在报错，下拉
+    里再堆一条一样的错误只会更乱。空字典让下拉只剩「不限」，侧栏另给
+    一句说明。
+    """
+    try:
+        return backend().dimensions()
+    except ApiError:
+        return {}
+
+
+def build_options(items: list[dict[str, str]]) -> dict[str, str]:
+    """把维度项做成「中文名 -> 代码」的映射。
+
+    显示中文、提交代码。反过来的话后端拼出的过滤条件匹配不上；只显示
+    代码，界面上就是一堆术语。
+
+    拆成纯函数是为了能单测：options_for 依赖 st.cache_resource，而那东西
+    在 pytest 的 bare mode 下不工作。
+    """
+    return {item["name_zh"]: item["code"] for item in items}
+
+
+def options_for(kind: str) -> dict[str, str]:
+    """取某一类维度的下拉选项。"""
+    return build_options(dimensions().get(kind, []))
 
 
 def init_state() -> None:
@@ -208,17 +236,30 @@ with st.sidebar:
     st.subheader("检索范围")
     st.caption(FILTER_HINT)
 
-    country = st.selectbox("国家或地区", ["不限", *COUNTRIES])
-    doc_type = st.selectbox("文档类型", ["不限", *DOC_TYPES])
-    publisher = st.selectbox("发布机构", ["不限", *PUBLISHERS])
+    countries = options_for("countries")
+    doc_types = options_for("doc_types")
+    publishers = options_for("publishers")
 
+    if not countries:
+        st.warning(
+            "没取到可选项，暂时只能全范围检索。"
+            "确认后端已启动：python scripts/serve.py",
+            icon=":material/warning:",
+        )
+
+    country = st.selectbox("国家或地区", [UNRESTRICTED, *countries])
+    doc_type = st.selectbox("文档类型", [UNRESTRICTED, *doc_types])
+    publisher = st.selectbox("发布机构", [UNRESTRICTED, *publishers])
+
+    # 界面显示中文名，提交给后端的是代码——代码才是它拼进检索表达式的
+    # 东西，中文名只是给人看的
     active_filters: dict[str, str] = {}
-    if country != "不限":
-        active_filters["country"] = country
-    if doc_type != "不限":
-        active_filters["doc_type"] = doc_type
-    if publisher != "不限":
-        active_filters["publisher"] = publisher
+    if country != UNRESTRICTED:
+        active_filters["country"] = countries[country]
+    if doc_type != UNRESTRICTED:
+        active_filters["doc_type"] = doc_types[doc_type]
+    if publisher != UNRESTRICTED:
+        active_filters["publisher"] = publishers[publisher]
 
     st.divider()
     if st.button("清空对话", icon=":material/delete:", width="stretch"):

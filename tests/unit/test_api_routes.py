@@ -338,6 +338,27 @@ class TestGetParent:
         assert body["error"]["code"] == "unknown_parent"
 
 
+class TestDimensions:
+    def test_returns_all_three_dimensions(self) -> None:
+        body = build_client().get("/api/v1/dimensions").json()
+
+        assert set(body) == {"countries", "doc_types", "publishers"}
+
+    def test_carries_both_code_and_name(self) -> None:
+        # 界面显示中文、提交代码，两者都要有
+        item = build_client().get("/api/v1/dimensions").json()["countries"][0]
+
+        assert set(item) == {"code", "name_zh", "name_en"}
+
+    def test_names_come_through(self) -> None:
+        # 界面显示的就是这几个中文名
+        body = build_client().get("/api/v1/dimensions").json()
+
+        assert body["countries"][0]["name_zh"] == "欧盟"
+        assert body["doc_types"][0]["name_zh"] == "常见问题"
+        assert body["publishers"][0]["name_zh"] == "亚马逊"
+
+
 class TestHealth:
     def make_state_with_health(self, *results: tuple[str, bool]) -> AppState:
         state = make_state()

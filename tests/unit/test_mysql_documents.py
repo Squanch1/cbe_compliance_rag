@@ -770,6 +770,70 @@ class TestGetChunks:
         assert connector.last.closed is True
 
 
+class TestListDimensions:
+    def executed_statements(self, connector: FakeConnector) -> list[str]:
+        """把所有连接上执行过的语句收齐。
+
+        三张表各查一次、各建一次连接（_fetch_many 一次查询一个连接），
+        connector.last 只看得到最后一条。
+        """
+        return [
+            statement
+            for connection in connector.connections
+            for statement in connection.cursor_obj.executed
+        ]
+
+    def test_queries_all_three_tables(self) -> None:
+        connector = FakeConnector(rows=(("EU", "欧盟", "European Union"),))
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.list_dimensions()
+
+        executed = self.executed_statements(connector)
+        assert len(executed) == 3
+        for table in ("dim_country", "dim_doc_type", "dim_publisher"):
+            assert any(table in statement for statement in executed)
+
+    def test_only_reads_active_values(self) -> None:
+        # 未启用的取值是给扩充范围预留的，摆在界面上只会让人选到一个
+        # 筛不出东西的值
+        connector = FakeConnector(rows=(("EU", "欧盟", "European Union"),))
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.list_dimensions()
+
+        for statement in self.executed_statements(connector):
+            assert "is_active = 1" in statement
+
+    def test_maps_rows_to_dimensions(self) -> None:
+        connector = FakeConnector(rows=(("EU", "欧盟", "European Union"),))
+        store = MysqlStore(make_config(), connect=connector)
+
+        dimensions = store.list_dimensions()
+
+        assert dimensions.countries[0].code == "EU"
+        assert dimensions.countries[0].name_zh == "欧盟"
+        assert dimensions.countries[0].name_en == "European Union"
+
+    def test_empty_tables_yield_empty_lists(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        dimensions = store.list_dimensions()
+
+        assert dimensions.countries == []
+        assert dimensions.doc_types == []
+        assert dimensions.publishers == []
+
+    def test_closes_resources(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.list_dimensions()
+
+        assert connector.last.closed is True
+
+
 class TestGetDocuments:
     def test_returns_records(self) -> None:
         connector = FakeConnector(rows=(make_row(),))

@@ -84,6 +84,14 @@ class BackendClient:
             payload["filters"] = filters
         return self._request("/api/v1/ask", payload=payload)
 
+    def dimensions(self) -> dict[str, Any]:
+        """取三张维度表的可用取值。
+
+        界面靠它把 `EU`、`guideline` 这类代码显示成中文——代码是后端筛选
+        用具，直接摆给使用者看等于让人先学一遍术语表。
+        """
+        return self._request("/api/v1/dimensions")
+
     def get_parent(self, parent_id: str) -> dict[str, Any]:
         """按 parent_id 取父块全文。"""
         return self._request("/api/v1/parents/%s" % parent_id)

@@ -110,6 +110,45 @@ class TestSidebar:
         assert any("清空对话" in item.label for item in app.sidebar.button)
 
 
+class TestDimensionOptions:
+    def test_maps_chinese_label_to_code(self) -> None:
+        # 下拉显示中文、提交代码。反过来的话后端拼出来的过滤条件匹配不上。
+        from app import build_options
+
+        options = build_options(
+            [{"code": "EU", "name_zh": "欧盟", "name_en": "European Union"}]
+        )
+
+        assert options == {"欧盟": "EU"}
+
+    def test_empty_input_yields_empty_mapping(self) -> None:
+        from app import build_options
+
+        assert build_options([]) == {}
+
+    def test_keeps_every_item(self) -> None:
+        from app import build_options
+
+        options = build_options(
+            [
+                {"code": "EU", "name_zh": "欧盟", "name_en": "European Union"},
+                {"code": "DE", "name_zh": "德国", "name_en": "Germany"},
+            ]
+        )
+
+        assert options == {"欧盟": "EU", "德国": "DE"}
+
+    def test_no_hardcoded_dimension_values_in_the_page(self) -> None:
+        # 取值必须来自维度表。写死在页面里的话，后端加一个国家，
+        # 界面上不会出现，而且不报错。
+        source = APP_PATH.read_text(encoding="utf-8")
+
+        assert '"EU"' not in source
+        assert "'EU'" not in source
+        assert '"guideline"' not in source
+        assert '"eu_commission"' not in source
+
+
 class TestSuggestions:
     def test_shown_on_an_empty_conversation(self) -> None:
         # AppTest 不把 st.pills 暴露成可查询的元素，退一步查那一节的标题

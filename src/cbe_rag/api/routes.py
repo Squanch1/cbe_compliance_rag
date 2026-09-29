@@ -15,11 +15,14 @@ from cbe_rag.api.deps import ApiError, AppState, get_state
 from cbe_rag.api.schemas import (
     AskRequest,
     AskResponse,
+    DimensionOut,
+    DimensionsOut,
     HealthItemOut,
     HealthResponse,
     ParentOut,
     to_ask_response,
 )
+from cbe_rag.storage.records import Dimension
 from cbe_rag.services.qa import QaRequest, answer
 from cbe_rag.storage import (
     BailianClient,
@@ -60,6 +63,31 @@ def ask(payload: AskRequest, request: Request, state: State) -> AskResponse:
         trace_id=trace_id,
     )
     return to_ask_response(result)
+
+
+def _to_dimension(item: Dimension) -> DimensionOut:
+    """把存储层的维度记录摊成响应模型。"""
+    return DimensionOut(
+        code=item.code, name_zh=item.name_zh, name_en=item.name_en
+    )
+
+
+@router.get("/dimensions", response_model=DimensionsOut)
+def get_dimensions(state: State) -> DimensionsOut:
+    """取三张维度表的可用取值。
+
+    界面靠它把 `EU`、`guideline` 这类代码显示成「欧盟」「官方指南」。
+    代码是后端筛选用具，直接摆给使用者看等于让人先学一遍术语表。
+
+    **取值来自维度表，不是写死的。** 以后扩充国家或文档类型只改数据，
+    界面自动跟着变。
+    """
+    dimensions = state.mysql.list_dimensions()
+    return DimensionsOut(
+        countries=[_to_dimension(item) for item in dimensions.countries],
+        doc_types=[_to_dimension(item) for item in dimensions.doc_types],
+        publishers=[_to_dimension(item) for item in dimensions.publishers],
+    )
 
 
 @router.get("/parents/{parent_id}", response_model=ParentOut)

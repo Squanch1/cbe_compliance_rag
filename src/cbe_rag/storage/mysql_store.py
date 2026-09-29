@@ -23,7 +23,7 @@ from cbe_rag.storage.ddl import (
     DocumentStatus,
 )
 from cbe_rag.storage.health import HealthResult
-from cbe_rag.storage.records import DocumentRecord
+from cbe_rag.storage.records import Dimension, Dimensions, DocumentRecord
 
 
 class MysqlCursor(Protocol):
@@ -156,6 +156,17 @@ _SELECT_ACTIVE_DOCUMENTS = (
     "SELECT " + _RECORD_COLUMNS_SQL + " FROM documents "
     "WHERE status = %s ORDER BY collected_date, doc_id"
 )
+
+# 维度表的取值。只取启用中的：未启用的那些是给扩充范围预留的
+# （见 ddl.py 的说明），摆在界面上只会让人选到一个筛不出东西的值。
+_SELECT_DIMENSIONS: dict[str, str] = {
+    "countries": "SELECT code, name_zh, name_en FROM dim_country "
+    "WHERE is_active = 1 ORDER BY code",
+    "doc_types": "SELECT code, name_zh, name_en FROM dim_doc_type "
+    "WHERE is_active = 1 ORDER BY code",
+    "publishers": "SELECT code, name_zh, name_en FROM dim_publisher "
+    "WHERE is_active = 1 ORDER BY code",
+}
 
 # 读出分块时的列顺序，与 _row_to_chunk 一一对应。理由同 _RECORD_COLUMNS：
 # 不用 SELECT *，表加字段后列顺序变了会静默错位。
@@ -678,6 +689,21 @@ class MysqlStore:
         finally:
             _close_quietly(cursor)
             _close_quietly(connection)
+
+    def list_dimensions(self) -> Dimensions:
+        """读三张维度表的可用取值。
+
+        界面拿它渲染下拉：显示中文名、提交代码。代码是后端拼进检索表达式
+        的东西，中文名只是给人看的，两者都要用得上。
+        """
+        select = {
+            name: [
+                Dimension(*row)
+                for row in self._fetch_many(statement, ())
+            ]
+            for name, statement in _SELECT_DIMENSIONS.items()
+        }
+        return Dimensions(**select)
 
     def get_chunks(self, chunk_ids: list[str]) -> list[Chunk]:
         """按 chunk_id 批量取分块，返回顺序不保证。

@@ -109,6 +109,30 @@ class ParentOut(BaseModel):
     publisher: str | None
 
 
+class DimensionOut(BaseModel):
+    """维度表的一项。
+
+    代码与中文名都给：界面显示中文，提交的却是代码——代码才是后端拼进
+    检索表达式的东西。
+    """
+
+    code: str
+    name_zh: str
+    name_en: str
+
+
+class DimensionsOut(BaseModel):
+    """三张维度表的可用取值，供界面渲染下拉。
+
+    只含启用中的取值。未启用的那些是给扩充范围预留的，摆到界面上只会让
+    人选到一个筛不出东西的值。
+    """
+
+    countries: list[DimensionOut]
+    doc_types: list[DimensionOut]
+    publishers: list[DimensionOut]
+
+
 class HealthItemOut(BaseModel):
     """单个依赖的连通性。"""
 

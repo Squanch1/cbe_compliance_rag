@@ -11,7 +11,7 @@ from typing import Any
 from cbe_rag.ingestion.parser.schema import Chunk, ChunkLevel
 from cbe_rag.retrieval.models import MatchedChild, ParentHit
 from cbe_rag.storage.ddl import DocumentStatus
-from cbe_rag.storage.records import DocumentRecord
+from cbe_rag.storage.records import Dimension, Dimensions, DocumentRecord
 
 TODAY = date(2026, 9, 29)
 PARENT_TEXT = (
@@ -108,6 +108,18 @@ class FakeMysql:
     def get_documents(self, doc_ids: list[str]) -> list[DocumentRecord]:
         self.document_lookups.append(list(doc_ids))
         return [record for record in self._documents if record.doc_id in doc_ids]
+
+    def list_dimensions(self) -> Dimensions:
+        """三张维度表各给一行，够验证界面能拿到中英文名。"""
+        return Dimensions(
+            countries=[
+                Dimension(code="EU", name_zh="欧盟", name_en="European Union")
+            ],
+            doc_types=[Dimension(code="faq", name_zh="常见问题", name_en="FAQ")],
+            publishers=[
+                Dimension(code="amazon", name_zh="亚马逊", name_en="Amazon")
+            ],
+        )
 
 
 def make_mysql(**overrides: Any) -> FakeMysql:
