@@ -65,15 +65,21 @@ def dimensions() -> dict[str, list[dict[str, str]]]:
 
 
 def build_options(items: list[dict[str, str]]) -> dict[str, str]:
-    """把维度项做成「中文名 -> 代码」的映射。
+    """把维度项做成「代码（中文名）-> 代码」的映射。
 
-    显示中文、提交代码。反过来的话后端拼出的过滤条件匹配不上；只显示
-    代码，界面上就是一堆术语。
+    **代码在前、中文名在括号里。** 代码才是后端认的值，也会出现在日志、
+    引用与筛选条件里；把代码摆出来，使用者对着界面上的字样就能在别处
+    找到同一个东西。中文名只做解释，替掉代码反而让人对不上号。
+
+    提交的仍然是代码。拿中文名去提交，后端拼出来的过滤条件匹配不上。
 
     拆成纯函数是为了能单测：options_for 依赖 st.cache_resource，而那东西
     在 pytest 的 bare mode 下不工作。
     """
-    return {item["name_zh"]: item["code"] for item in items}
+    return {
+        "%s（%s）" % (item["code"], item["name_zh"]): item["code"]
+        for item in items
+    }
 
 
 def options_for(kind: str) -> dict[str, str]:

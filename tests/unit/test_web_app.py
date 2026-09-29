@@ -111,15 +111,26 @@ class TestSidebar:
 
 
 class TestDimensionOptions:
-    def test_maps_chinese_label_to_code(self) -> None:
-        # 下拉显示中文、提交代码。反过来的话后端拼出来的过滤条件匹配不上。
+    def test_label_pairs_the_code_with_its_chinese_name(self) -> None:
+        # 代码在前：它才是后端认的值，也会出现在日志与引用里，
+        # 使用者对着界面上的字样就能在别处找到同一个东西
         from app import build_options
 
         options = build_options(
             [{"code": "EU", "name_zh": "欧盟", "name_en": "European Union"}]
         )
 
-        assert options == {"欧盟": "EU"}
+        assert options == {"EU（欧盟）": "EU"}
+
+    def test_submitted_value_is_still_the_code(self) -> None:
+        # 拿中文名去提交，后端拼出来的过滤条件匹配不上
+        from app import build_options
+
+        options = build_options(
+            [{"code": "guideline", "name_zh": "官方指南", "name_en": "Guideline"}]
+        )
+
+        assert list(options.values()) == ["guideline"]
 
     def test_empty_input_yields_empty_mapping(self) -> None:
         from app import build_options
@@ -136,7 +147,7 @@ class TestDimensionOptions:
             ]
         )
 
-        assert options == {"欧盟": "EU", "德国": "DE"}
+        assert options == {"EU（欧盟）": "EU", "DE（德国）": "DE"}
 
     def test_no_hardcoded_dimension_values_in_the_page(self) -> None:
         # 取值必须来自维度表。写死在页面里的话，后端加一个国家，
