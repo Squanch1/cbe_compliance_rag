@@ -172,6 +172,11 @@ class RetrievalConfig(_Section):
     )
     dense_weight: float = Field(default=0.7, ge=0.0, le=1.0, description="融合时稠密路权重")
     sparse_weight: float = Field(default=0.3, ge=0.0, le=1.0, description="融合时稀疏路权重")
+    context_parents: int = Field(
+        default=5,
+        gt=0,
+        description="折叠后送进提示词的父块数量",
+    )
     refuse_threshold: float | None = Field(
         default=None,
         description=(
