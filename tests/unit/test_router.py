@@ -187,3 +187,30 @@ class TestParseDocument:
 
         assert outcome.document is not None
         assert outcome.attempts[0].tier == "pdf.text_layer"
+
+
+class TestPackageExports:
+    """包入口的导出完整性。
+
+    回归：__all__ 里列了名字但 import 语句忘了加，调用方从包入口
+    取不到、必须绕到子模块——这种不一致靠肉眼看不出来。
+    """
+
+    def test_all_declared_names_are_importable(self) -> None:
+        import cbe_rag.ingestion.parser as package
+
+        missing = [name for name in package.__all__ if not hasattr(package, name)]
+
+        assert not missing, "导出清单里有取不到的名字：%s" % missing
+
+    def test_router_entries_are_reachable_from_package(self) -> None:
+        # 日常调用走路由入口，这几个必须能从包入口直接取到
+        from cbe_rag.ingestion.parser import (
+            ParseRequest,
+            assess,
+            parse_document,
+            probe_difficulty,
+        )
+
+        assert all(callable(x) for x in (parse_document, assess, probe_difficulty))
+        assert ParseRequest is not None
