@@ -46,6 +46,10 @@ class DocumentRecord:
 class VectorHit:
     """向量检索的一条命中。
 
+    **带 parent_id 是必需的，不能从 chunk_id 推。** 子块的编号是全局
+    递增的（`{doc_id}_c0042`），与它所属父块的编号（`{doc_id}_p0007`）
+    没有对应关系，只能由 Milvus 一并返回。
+
     score 是两路融合后的分数。各路的原始分不在这里——量纲不同（同一个
     问题下稠密 0.5867、稀疏 0.0786），放在一起很容易被拿去比较或当阈值。
     需要用原始分的地方（拒答判据）单独取，见 MilvusStore.top_dense_score。
@@ -53,6 +57,7 @@ class VectorHit:
 
     chunk_id: str
     doc_id: str
+    parent_id: str
     score: float
 
 

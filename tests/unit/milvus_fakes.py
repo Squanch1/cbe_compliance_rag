@@ -293,13 +293,18 @@ def make_query_row(**overrides: Any) -> dict[str, Any]:
 def make_hit(
     chunk_id: str = "doc-1_c0000",
     doc_id: str = "doc-1",
+    parent_id: str = "doc-1_p0000",
     distance: float = 0.6,
 ) -> dict[str, Any]:
     """造一条检索命中，形状与 pymilvus 的返回一致。"""
     return {
         "chunk_id": chunk_id,
         "distance": distance,
-        "entity": {"doc_id": doc_id, "chunk_id": chunk_id},
+        "entity": {
+            "doc_id": doc_id,
+            "parent_id": parent_id,
+            "chunk_id": chunk_id,
+        },
     }
 
 

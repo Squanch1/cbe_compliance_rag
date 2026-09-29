@@ -31,28 +31,19 @@ class RetrievalQuery:
 
 
 @dataclass(frozen=True)
-class ChunkHit:
-    """Milvus 返回的一条子块命中。
-
-    score 是融合后的分数，不是任何一路的原始分——原始分量纲不同，
-    没法放在一起比较。
-    """
-
-    chunk_id: str
-    doc_id: str
-    score: float
-
-
-@dataclass(frozen=True)
 class SearchOutcome:
-    """一次混合检索的原始产出。
+    """一次混合检索的产出：折叠后的父块命中，加一个质量指标。
+
+    parents 已按分数从高到低排好，且不超过配置的 context_parents 条。
+    折叠在这里做完，不留给调用方：子块是检索单位，父块才是送进提示词的
+    单位，中间这一步不落地，就没法解释「为什么召回的是这几个」。
 
     dense_top_score 单独取出来，是因为拒答判据用的是它：稠密路的最高
     余弦相似度有绝对含义（0.6 就是 0.6），而融合分经过归一化和加权，
     数值随权重变化，拿它当阈值没有可比性。
     """
 
-    hits: list[ChunkHit]
+    parents: list[ParentHit]
     dense_top_score: float | None
 
 

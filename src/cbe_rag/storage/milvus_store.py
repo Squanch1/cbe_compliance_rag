@@ -449,7 +449,9 @@ class MilvusStore:
             reqs=requests,
             ranker=WeightedRanker(*weights),
             limit=limit,
-            output_fields=["chunk_id", "doc_id"],
+            # parent_id 必须一并取回：折叠要靠它，而子块的编号是全局
+            # 递增的，从 chunk_id 推不出它属于哪个父块
+            output_fields=["chunk_id", "doc_id", "parent_id"],
         )
         if not results or not results[0]:
             return []
@@ -458,6 +460,7 @@ class MilvusStore:
             VectorHit(
                 chunk_id=hit["chunk_id"],
                 doc_id=hit["entity"]["doc_id"],
+                parent_id=hit["entity"]["parent_id"],
                 score=float(hit["distance"]),
             )
             for hit in results[0]

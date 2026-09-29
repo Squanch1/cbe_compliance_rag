@@ -127,8 +127,9 @@ class TestHybridSearch:
 
         assert db_client.loaded
 
-    def test_requests_chunk_and_doc_ids(self) -> None:
-        # 折叠与取父块都要用到这两个字段
+    def test_requests_the_fields_folding_needs(self) -> None:
+        # parent_id 漏了折叠会直接失败，不算隐蔽；doc_id 漏了要等取
+        # 引用元数据时才发现，那时已经离开了这一层的排查范围
         store, db_client, _ = build_db_store()
 
         run_search(store)
@@ -136,6 +137,7 @@ class TestHybridSearch:
         assert set(db_client.hybrid_searched[-1]["output_fields"]) == {
             "chunk_id",
             "doc_id",
+            "parent_id",
         }
 
 
