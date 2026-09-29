@@ -4,6 +4,7 @@
 （见 CLAUDE.md 5.3 与 docs/spec/02-architecture.md 第 2.4 节）。
 """
 
+from cbe_rag.storage.bailian_client import BailianClient, Completion
 from cbe_rag.storage.ddl import DocumentStatus
 from cbe_rag.storage.embedding import EmbeddingResult, EmbeddingStore
 from cbe_rag.storage.health import HealthResult, StorageAdapter
@@ -14,7 +15,9 @@ from cbe_rag.storage.records import ChunkVector, DocumentRecord, VectorHit
 from cbe_rag.storage.redis_store import RedisStore
 
 __all__ = [
+    "BailianClient",
     "ChunkVector",
+    "Completion",
     "DocumentStatus",
     "EmbeddingResult",
     "EmbeddingStore",
