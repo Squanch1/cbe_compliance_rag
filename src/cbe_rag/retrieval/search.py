@@ -9,7 +9,12 @@ from __future__ import annotations
 import re
 
 from cbe_rag.config.settings import RetrievalConfig
-from cbe_rag.retrieval.models import ParentHit, RetrievalQuery, SearchOutcome
+from cbe_rag.retrieval.models import (
+    MatchedChild,
+    ParentHit,
+    RetrievalQuery,
+    SearchOutcome,
+)
 from cbe_rag.storage.embedding import EmbeddingStore
 from cbe_rag.storage.milvus_store import MilvusStore
 from cbe_rag.storage.records import VectorHit
@@ -45,34 +50,50 @@ def build_filter(query: RetrievalQuery) -> str:
 
 
 def fold_by_parent(hits: list[VectorHit]) -> list[ParentHit]:
-    """按 parent_id 折叠，同一父块只保留最高分，返回按分数降序的结果。
+    """按 parent_id 折叠，返回按分数降序的结果。
 
-    **取最高分而不是求平均。** 一个父块的多个子块都命中，说明它整体
-    相关，最高分只是它的下界；求平均会被其中不相关的子块拉低，反而
+    **父块分数取最高分，不是求平均。** 一个父块的多个子块都命中，说明它
+    整体相关，最高分只是它的下界；求平均会被其中不相关的子块拉低，反而
     惩罚了覆盖得广的父块。
 
-    分数相同时按 parent_id 排，保证同一份语料两次跑出的顺序一致——
-    顺序随插入顺序变会让问题难以复现。
+    **但命中的子块一条都不能丢。** 排序用最高分，引用要高亮的却是「哪几
+    段被命中了」——模型可能依据子块 B 作答，而分数最高的是子块 A，只留 A
+    会让用户点开引用时发现那段原文支撑不了那句话（见 02-architecture 6.5）。
+
+    分数相同时按 parent_id 排，子块之间按 chunk_id 排，保证同一份语料两次
+    跑出的顺序一致——顺序随插入顺序变会让问题难以复现。
     """
     best: dict[str, ParentHit] = {}
     for hit in hits:
+        child = MatchedChild(chunk_id=hit.chunk_id, score=hit.score)
         current = best.get(hit.parent_id)
         if current is None:
             best[hit.parent_id] = ParentHit(
                 parent_id=hit.parent_id,
                 doc_id=hit.doc_id,
                 score=hit.score,
-                matched_children=1,
+                children=[child],
             )
             continue
         best[hit.parent_id] = ParentHit(
             parent_id=current.parent_id,
             doc_id=current.doc_id,
             score=max(current.score, hit.score),
-            matched_children=current.matched_children + 1,
+            children=current.children + [child],
         )
 
-    return sorted(best.values(), key=lambda item: (-item.score, item.parent_id))
+    folded = [
+        ParentHit(
+            parent_id=parent.parent_id,
+            doc_id=parent.doc_id,
+            score=parent.score,
+            children=sorted(
+                parent.children, key=lambda item: (-item.score, item.chunk_id)
+            ),
+        )
+        for parent in best.values()
+    ]
+    return sorted(folded, key=lambda item: (-item.score, item.parent_id))
 
 
 def search(

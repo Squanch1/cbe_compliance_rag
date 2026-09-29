@@ -89,6 +89,36 @@ class TestFoldByParent:
 
         assert fold_by_parent(hits)[0].matched_children == 2
 
+    def test_keeps_every_matched_child(self) -> None:
+        # 排序用最高分，引用要高亮的却是「哪几段被命中了」。只留最高分
+        # 那条会让用户点开引用时发现原文支撑不了那句话。
+        hits = [hit("p1", 0.4, "d_c0"), hit("p1", 0.7, "d_c1")]
+
+        children = fold_by_parent(hits)[0].children
+
+        assert [child.chunk_id for child in children] == ["d_c1", "d_c0"]
+
+    def test_children_are_sorted_by_score(self) -> None:
+        hits = [hit("p1", 0.2, "d_c0"), hit("p1", 0.9, "d_c1"), hit("p1", 0.5, "d_c2")]
+
+        children = fold_by_parent(hits)[0].children
+
+        assert [child.chunk_id for child in children] == ["d_c1", "d_c2", "d_c0"]
+
+    def test_child_order_is_deterministic_on_ties(self) -> None:
+        # 顺序随插入顺序变的话，同一个问题两次跑出的高亮范围不同
+        hits = [hit("p1", 0.5, "d_c2"), hit("p1", 0.5, "d_c1")]
+
+        children = fold_by_parent(hits)[0].children
+
+        assert [child.chunk_id for child in children] == ["d_c1", "d_c2"]
+
+    def test_single_child_case(self) -> None:
+        children = fold_by_parent([hit("p1", 0.6, "d_c0")])[0].children
+
+        assert len(children) == 1
+        assert children[0].score == pytest.approx(0.6)
+
     def test_keeps_different_parents_separate(self) -> None:
         hits = [hit("p1", 0.4), hit("p2", 0.7)]
 

@@ -12,8 +12,10 @@ from __future__ import annotations
 import pytest
 
 from cbe_rag.retrieval.context import ContextError, load_parents
+from cbe_rag.retrieval.models import MatchedChild
 from retrieval_fakes import (
     PARENT_TEXT,
+    make_child_chunk,
     make_document,
     make_mysql,
     make_parent_chunk,
@@ -46,8 +48,8 @@ class TestLoadParents:
     def test_keeps_the_incoming_order(self) -> None:
         # 传进来的顺序就是相关性顺序，返回时不能被打乱
         hits = [
-            make_parent_hit(parent_id="doc-1_p0001", score=0.9),
-            make_parent_hit(parent_id="doc-1_p0000", score=0.5),
+            make_parent_hit(parent_id="doc-1_p0001", score=0.9, children=[]),
+            make_parent_hit(parent_id="doc-1_p0000", score=0.5, children=[]),
         ]
         mysql = make_mysql(
             chunks=[
@@ -73,8 +75,8 @@ class TestLoadParents:
     def test_queries_in_two_batches(self) -> None:
         # 5 个父块逐条查就是 10 次往返，而它们本来就是两批
         hits = [
-            make_parent_hit(parent_id="doc-1_p0000"),
-            make_parent_hit(parent_id="doc-1_p0001"),
+            make_parent_hit(parent_id="doc-1_p0000", children=[]),
+            make_parent_hit(parent_id="doc-1_p0001", children=[]),
         ]
         mysql = make_mysql(
             chunks=[
@@ -91,8 +93,8 @@ class TestLoadParents:
     def test_looks_up_each_document_once(self) -> None:
         # 同一份文档的多个父块被命中是常事，doc_id 要去重
         hits = [
-            make_parent_hit(parent_id="doc-1_p0000"),
-            make_parent_hit(parent_id="doc-1_p0001"),
+            make_parent_hit(parent_id="doc-1_p0000", children=[]),
+            make_parent_hit(parent_id="doc-1_p0001", children=[]),
         ]
         mysql = make_mysql(
             chunks=[
@@ -107,8 +109,8 @@ class TestLoadParents:
 
     def test_different_documents_are_all_fetched(self) -> None:
         hits = [
-            make_parent_hit(parent_id="doc-1_p0000", doc_id="doc-1"),
-            make_parent_hit(parent_id="doc-2_p0000", doc_id="doc-2"),
+            make_parent_hit(parent_id="doc-1_p0000", doc_id="doc-1", children=[]),
+            make_parent_hit(parent_id="doc-2_p0000", doc_id="doc-2", children=[]),
         ]
         mysql = make_mysql(
             chunks=[
@@ -121,6 +123,51 @@ class TestLoadParents:
         parents = load_parents(hits, mysql)
 
         assert len(parents) == 2
+
+    def test_restores_every_matched_child(self) -> None:
+        # 引用要锚定到子块，界面靠这些偏移高亮
+        hits = [
+            make_parent_hit(
+                children=[
+                    MatchedChild(chunk_id="doc-1_c0000", score=0.7),
+                    MatchedChild(chunk_id="doc-1_c0001", score=0.5),
+                ]
+            )
+        ]
+        mysql = make_mysql(
+            chunks=[
+                make_parent_chunk(),
+                make_child_chunk(chunk_id="doc-1_c0000", start_offset=0, end_offset=20),
+                make_child_chunk(
+                    chunk_id="doc-1_c0001", start_offset=20, end_offset=40
+                ),
+            ]
+        )
+
+        children = load_parents(hits, mysql)[0].matched_children
+
+        assert [child.chunk_id for child in children] == [
+            "doc-1_c0000",
+            "doc-1_c0001",
+        ]
+        assert children[0].start_offset == 0
+        assert children[1].end_offset == 40
+
+    def test_child_offsets_and_text_come_from_mysql(self) -> None:
+        # Milvus 里没存这两样，界面要高亮只能靠回查
+        hits = [make_parent_hit(children=[MatchedChild("doc-1_c0000", 0.7)])]
+
+        child = load_parents(hits, make_mysql())[0].matched_children[0]
+
+        assert child.text
+        assert child.start_offset is not None
+
+    def test_missing_child_chunk_raises(self) -> None:
+        # 同样是「Milvus 有、MySQL 没有」，和父块缺失一类问题
+        hits = [make_parent_hit(children=[MatchedChild("doc-1_c0999", 0.7)])]
+
+        with pytest.raises(ContextError, match="子块"):
+            load_parents(hits, make_mysql())
 
 
 class TestInconsistentData:

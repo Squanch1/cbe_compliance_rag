@@ -7,7 +7,11 @@ Milvus 里只有子块的向量和几个标量字段；父块正文与引用元�
 
 from __future__ import annotations
 
-from cbe_rag.retrieval.models import ParentHit, RetrievedParent
+from cbe_rag.retrieval.models import (
+    ParentHit,
+    RetrievedChild,
+    RetrievedParent,
+)
 from cbe_rag.storage.mysql_store import MysqlStore
 
 
@@ -34,7 +38,13 @@ def load_parents(
         return []
 
     parent_ids = [hit.parent_id for hit in hits]
-    chunks = {chunk.chunk_id: chunk for chunk in mysql.get_chunks(parent_ids)}
+    child_ids = [child.chunk_id for hit in hits for child in hit.children]
+
+    # 父块与命中的子块同在一张表，一次查回来就够
+    chunks = {
+        chunk.chunk_id: chunk
+        for chunk in mysql.get_chunks(parent_ids + child_ids)
+    }
 
     missing_chunks = [
         parent_id for parent_id in parent_ids if parent_id not in chunks
@@ -44,6 +54,17 @@ def load_parents(
             "有 %d 个父块在库里找不到：%s。Milvus 里有指向它们的子块，"
             "说明索引时中途断了。"
             % (len(missing_chunks), "、".join(missing_chunks[:5]))
+        )
+
+    # 子块缺失也报错，理由同上：同样是「Milvus 有、MySQL 没有」。
+    # 分开处理会让「索引断在哪一步」变得难判断。
+    missing_children = [
+        child_id for child_id in child_ids if child_id not in chunks
+    ]
+    if missing_children:
+        raise ContextError(
+            "有 %d 个命中的子块在库里找不到：%s。索引时中途断了。"
+            % (len(missing_children), "、".join(missing_children[:5]))
         )
 
     # 去重但保序：多个父块常常属于同一份文档，同一份只查一次
@@ -71,6 +92,16 @@ def load_parents(
             doc_type=documents[hit.doc_id].doc_type,
             publisher=documents[hit.doc_id].publisher,
             effective_date=documents[hit.doc_id].effective_date,
+            matched_children=[
+                RetrievedChild(
+                    chunk_id=child.chunk_id,
+                    score=child.score,
+                    text=chunks[child.chunk_id].text,
+                    start_offset=chunks[child.chunk_id].start_offset,
+                    end_offset=chunks[child.chunk_id].end_offset,
+                )
+                for child in hit.children
+            ],
         )
         for hit in hits
     ]

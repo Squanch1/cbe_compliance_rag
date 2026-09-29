@@ -19,7 +19,12 @@ from cbe_rag.retrieval.service import (
 )
 from indexing_fakes import FakeEmbeddingStore
 from milvus_fakes import build_db_store, make_hit
-from retrieval_fakes import PARENT_TEXT, make_mysql, make_parent_chunk
+from retrieval_fakes import (
+    PARENT_TEXT,
+    make_child_chunk,
+    make_mysql,
+    make_parent_chunk,
+)
 
 
 def make_config(**overrides: Any) -> RetrievalConfig:
@@ -65,6 +70,8 @@ class TestRetrieve:
             chunks=[
                 make_parent_chunk(chunk_id="doc-1_p0000"),
                 make_parent_chunk(chunk_id="doc-1_p0001"),
+                make_child_chunk(chunk_id="d_c0", parent_id="doc-1_p0001"),
+                make_child_chunk(chunk_id="d_c1", parent_id="doc-1_p0000"),
             ]
         )
 
