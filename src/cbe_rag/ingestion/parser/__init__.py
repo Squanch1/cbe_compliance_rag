@@ -8,6 +8,11 @@ from cbe_rag.ingestion.parser.html_parser import (
     extract_blocks,
     parse_html,
 )
+from cbe_rag.ingestion.parser.pdf_parser import (
+    PdfParseError,
+    TextLine,
+    extract_lines,
+)
 from cbe_rag.ingestion.parser.schema import (
     Block,
     BlockType,
@@ -31,8 +36,11 @@ __all__ = [
     "DocumentMeta",
     "HtmlParseError",
     "ParsedDocument",
+    "PdfParseError",
     "SourceFormat",
+    "TextLine",
     "content_selector_for",
+    "extract_lines",
     "extract_blocks",
     "make_child_chunk_id",
     "make_parent_chunk_id",

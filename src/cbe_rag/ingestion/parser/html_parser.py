@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -22,6 +21,7 @@ from cbe_rag.ingestion.parser.schema import (
     ParsedDocument,
     SourceFormat,
 )
+from cbe_rag.ingestion.parser.text import normalise_whitespace
 
 # 解析器版本。解析规则变化时递增，便于回溯「这份产物是哪一版解析器生成的」。
 PARSER_VERSION = "0.1.0"
@@ -43,8 +43,6 @@ _HEADING_LEVELS: dict[str, int] = {
 
 _EXTRACT_TAGS: tuple[str, ...] = tuple(_HEADING_LEVELS) + ("p", "li", "table")
 _REMOVED_TAGS: tuple[str, ...] = ("script", "style")
-
-_WHITESPACE = re.compile(r"\s+")
 
 
 class HtmlParseError(Exception):
@@ -70,11 +68,6 @@ def content_selector_for(url: str) -> str:
             % (host, "、".join(sorted(SITE_CONTENT_SELECTORS)))
         )
     return selector
-
-
-def _normalise(text: str) -> str:
-    """折叠空白。HTML 源码里的换行与缩进对正文没有意义。"""
-    return _WHITESPACE.sub(" ", text).strip()
 
 
 def _block_type_for(tag_name: str) -> BlockType:
@@ -123,7 +116,7 @@ def extract_blocks(html: str, selector: str) -> list[Block]:
         # 文本节点自身带的空格会自然保留，英文词间不会粘连。
         # 表格相反，单元格之间必须分隔，否则相邻格的内容会粘成一个词。
         separator = " " if tag_name == "table" else ""
-        text = _normalise(element.get_text(separator, strip=False))
+        text = normalise_whitespace(element.get_text(separator, strip=False))
         if not text:
             continue
         blocks.append(
@@ -145,12 +138,12 @@ def _extract_title(soup: BeautifulSoup) -> str:
     """
     heading = soup.find("h1")
     if heading is not None:
-        text = _normalise(heading.get_text("", strip=False))
+        text = normalise_whitespace(heading.get_text("", strip=False))
         if text:
             return text
 
     if soup.title is not None:
-        text = _normalise(soup.title.get_text("", strip=False))
+        text = normalise_whitespace(soup.title.get_text("", strip=False))
         if text:
             return text
 
