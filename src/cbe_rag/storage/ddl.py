@@ -9,6 +9,7 @@ MySQL 的建表语句、维度表的初始数据、Milvus 集合的字段与索�
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 
@@ -221,6 +222,25 @@ MILVUS_SCALAR_INDEX_TYPE = "INVERTED"
 # anns_field 都要用同一份，分别写死会出现「改了这里不生效」。
 MILVUS_DENSE_FIELD = "dense_vector"
 MILVUS_SPARSE_FIELD = "sparse_vector"
+
+# 建表语句里一行列定义：`列名 类型 ... COMMENT '...',`
+#
+# 靠「列名是小写、类型是大写开头」把约束行排除掉——PRIMARY KEY、KEY、
+# UNIQUE、CONSTRAINT 都是大写开头。这比列一份关键字黑名单可靠：以后加了
+# 新的约束语法也不必回来改这里。
+_COLUMN_LINE = re.compile(r"^\s+([a-z_]+)\s+([A-Z].*?)\s*,?\s*$", re.MULTILINE)
+
+
+def column_definitions(statement: str) -> dict[str, str]:
+    """从建表语句里提取「列名 -> 完整列定义」，去掉行尾逗号。
+
+    完整定义可以直接用在 `ALTER TABLE ... MODIFY COLUMN` 后面。
+    """
+    return {
+        match.group(1): match.group(2).strip()
+        for match in _COLUMN_LINE.finditer(statement)
+    }
+
 
 # 集合的字段定义：(字段名, 类型名, 附加参数)
 #

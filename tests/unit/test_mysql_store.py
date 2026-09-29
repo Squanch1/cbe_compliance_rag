@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from pymysql.err import MySQLError, OperationalError
 
@@ -14,6 +16,7 @@ from cbe_rag.storage.ddl import (
     DOC_TYPE_SEED,
     MYSQL_TABLES,
     PUBLISHER_SEED,
+    column_definitions,
 )
 from cbe_rag.storage.mysql_store import MysqlStore
 from mysql_fakes import FakeConnector, make_config
@@ -214,6 +217,91 @@ class TestCreateSchema:
         # 缺了这个就没法重复执行
         for name, statement in MYSQL_TABLES:
             assert "IF NOT EXISTS" in statement.upper(), name
+
+
+def shown_columns(
+    table: str, **comment_overrides: str
+) -> tuple[tuple[Any, ...], ...]:
+    """按 ddl.py 的定义造出 SHOW FULL COLUMNS 的结果。
+
+    默认造出「库里与代码完全一致」的样子；注释可以按列名覆盖，用来造出
+    不一致的场景。
+
+    列序：Field, Type, Collation, Null, Key, Default, Extra, Privileges, Comment
+    """
+    statement = dict(MYSQL_TABLES)[table]
+    rows: list[tuple[Any, ...]] = []
+    for column, definition in column_definitions(statement).items():
+        match = re.search(r"COMMENT\s+'([^']*)'", definition)
+        comment = comment_overrides.get(
+            column, match.group(1) if match else ""
+        )
+        rows.append((column, "unknown", None, "NO", "", None, "", "", comment))
+    return tuple(rows)
+
+
+class TestSyncColumns:
+    def test_no_change_when_comments_match(self) -> None:
+        # 注释一致就不该发 ALTER——每次初始化都重建一遍表结构没有必要
+        connector = FakeConnector(rows=shown_columns("documents"))
+        store = MysqlStore(make_config(), connect=connector)
+
+        changes = store.sync_columns(tables=("documents",))
+
+        assert changes == []
+        assert all(
+            "ALTER" not in sql.upper() for sql in connector.last.cursor_obj.executed
+        )
+
+    def test_updates_the_comment_when_it_differs(self) -> None:
+        # 实测踩过：建表用 IF NOT EXISTS，表已存在时改注释不生效，
+        # 库里那列停在旧取值上，看表结构的人被误导
+        connector = FakeConnector(rows=shown_columns("documents", doc_id="旧注释"))
+        store = MysqlStore(make_config(), connect=connector)
+
+        changes = store.sync_columns(tables=("documents",))
+
+        assert changes == ["documents.doc_id"]
+        assert any(
+            "ALTER TABLE" in sql.upper() for sql in connector.last.cursor_obj.executed
+        )
+
+    def test_alter_carries_the_definition_from_ddl(self) -> None:
+        # 用 ddl.py 里的完整定义，类型与可空性一并对齐
+        connector = FakeConnector(rows=shown_columns("documents", doc_id="旧注释"))
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.sync_columns(tables=("documents",))
+        statement = [
+            sql for sql in connector.last.cursor_obj.executed if "ALTER" in sql.upper()
+        ][0]
+
+        # 列名要带上——column_definitions 给的定义里不含它，漏了就是语法错误。
+        # 这个只在真跑时才暴露，所以断言写死一点。
+        assert "`doc_id`" in statement
+        assert "CHAR(36)" in statement
+        assert "NOT NULL" in statement
+        assert "文档唯一标识" in statement
+
+    def test_rolls_back_on_failure(self) -> None:
+        connector = FakeConnector(
+            rows=shown_columns("documents", doc_id="旧注释"),
+            query_fail_with=MySQLError("语法错误"),
+        )
+        store = MysqlStore(make_config(), connect=connector)
+
+        with pytest.raises(MySQLError):
+            store.sync_columns(tables=("documents",))
+
+        assert connector.last.rollbacks == 1
+
+    def test_closes_resources(self) -> None:
+        connector = FakeConnector(rows=())
+        store = MysqlStore(make_config(), connect=connector)
+
+        store.sync_columns(tables=("documents",))
+
+        assert connector.last.closed is True
 
 
 class TestSeedDimensions:

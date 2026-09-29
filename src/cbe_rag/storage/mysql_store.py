@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime
 from typing import Any, Callable, Protocol
@@ -21,6 +22,7 @@ from cbe_rag.storage.ddl import (
     MYSQL_TABLES,
     PUBLISHER_SEED,
     DocumentStatus,
+    column_definitions,
 )
 from cbe_rag.storage.health import HealthResult
 from cbe_rag.storage.records import Dimension, Dimensions, DocumentRecord
@@ -202,6 +204,17 @@ _INSERT_CHUNK = (
 )
 
 
+# 列定义里 COMMENT 后面的那段引号内容。够用即可——我们的建表语句里
+# 注释不带转义引号。
+_DEFINITION_COMMENT = re.compile(r"COMMENT\s+'([^']*)'")
+
+
+def _definition_comment(definition: str) -> str:
+    """取出列定义里的注释文本，没有注释时返回空串。"""
+    match = _DEFINITION_COMMENT.search(definition)
+    return match.group(1) if match else ""
+
+
 def _placeholders(count: int) -> str:
     """拼出 count 个 %s 占位符。
 
@@ -381,6 +394,66 @@ class MysqlStore:
         except Exception:
             # 出错时回滚再抛出。这里捕获所有异常只是为了确保回滚，
             # 异常本身照常向上传播。
+            connection.rollback()
+            raise
+        finally:
+            _close_quietly(cursor)
+            _close_quietly(connection)
+
+    def sync_columns(self, tables: tuple[str, ...] | None = None) -> list[str]:
+        """把库里各列的定义对齐到 ddl.py，返回被改动的列。
+
+        tables 不传就检查全部；传了就只查那几张，便于单独对齐一张表。
+
+        **为什么需要它。** 建表用的是 CREATE TABLE IF NOT EXISTS，表已存在
+        时整句跳过——改了列注释不会有任何效果。于是「代码里写的」和「库里
+        实际的」会悄悄分家：不报错，只是以后看表结构的人被误导。实测踩过
+        一次（dim_doc_type 的注释停在旧取值上）。
+
+        用 ddl.py 里的完整列定义做 MODIFY，因此类型与可空性也一并对齐。
+        这是刻意的：ddl.py 是表结构的唯一来源，两边不一致说明有人手工改过
+        库，那本来就该被纠回来。
+
+        库里多出来的列只报告、不删除：删列会丢数据，那不该由初始化脚本
+        替人决定。
+        """
+        wanted = set(tables) if tables is not None else None
+        changes: list[str] = []
+        connection = self._connect()
+        cursor = None
+        try:
+            cursor = connection.cursor()
+            for table, statement in MYSQL_TABLES:
+                if wanted is not None and table not in wanted:
+                    continue
+                cursor.execute("SHOW FULL COLUMNS FROM `%s`" % table)
+                # SHOW FULL COLUMNS 的列序：Field, Type, ..., Comment（第 9 列）
+                existing = {row[0]: row for row in cursor.fetchall()}
+
+                for column, definition in column_definitions(statement).items():
+                    row = existing.get(column)
+                    if row is None:
+                        changes.append("%s.%s：库里缺这一列" % (table, column))
+                        continue
+                    if row[8] == _definition_comment(definition):
+                        continue
+                    # column_definitions 给的是「列名 -> 定义」，定义里不含
+                    # 列名，拼 SQL 时要补上
+                    cursor.execute(
+                        "ALTER TABLE `%s` MODIFY COLUMN `%s` %s"
+                        % (table, column, definition)
+                    )
+                    changes.append("%s.%s" % (table, column))
+
+                extra = set(existing) - set(column_definitions(statement))
+                for column in sorted(extra):
+                    changes.append(
+                        "%s.%s：库里多出这一列，未自动处理" % (table, column)
+                    )
+
+            connection.commit()
+            return changes
+        except Exception:
             connection.rollback()
             raise
         finally:

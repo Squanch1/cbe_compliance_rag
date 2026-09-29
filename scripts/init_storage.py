@@ -44,6 +44,15 @@ def init_mysql(settings: Settings) -> bool:
             "  [OK] 维度数据已同步：%s"
             % "、".join("%s %d 行" % (k, v) for k, v in affected.items())
         )
+
+        # 建表用的是 IF NOT EXISTS，表已存在时整句跳过——改了列注释不会
+        # 生效。这里主动对齐一次，免得「代码里写的」和「库里实际的」悄悄
+        # 分家。
+        synced = store.sync_columns()
+        if synced:
+            print("  [OK] 列定义已对齐 %d 处：%s" % (len(synced), "、".join(synced)))
+        else:
+            print("  [OK] 列定义已与 ddl.py 一致")
         return True
     except Exception as exc:
         print("  [FAIL] %s: %s" % (type(exc).__name__, str(exc)[:300]))
