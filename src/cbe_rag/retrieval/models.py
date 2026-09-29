@@ -75,6 +75,7 @@ class RetrievedParent:
     doc_id: str
     score: float
     text: str
+    token_count: int
     title: str
     source_url: str | None
     country: str | None

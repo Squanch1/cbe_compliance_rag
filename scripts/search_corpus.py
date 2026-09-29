@@ -50,7 +50,7 @@ def preview(text: str, *, limit: int = PREVIEW_CHARS) -> list[str]:
         return ["（空）"]
     if len(flat) <= limit:
         return [flat]
-    return [flat[:limit] + "……", "（共 %d 字）" % len(flat)]
+    return [flat[:limit] + "……", "（共 %d 字符）" % len(flat)]
 
 
 def render_parents(parents: list[RetrievedParent]) -> list[str]:
@@ -67,6 +67,8 @@ def render_parents(parents: list[RetrievedParent]) -> list[str]:
             "      维度：%s / %s / %s"
             % (parent.country, parent.doc_type, parent.publisher)
         )
+        # token 数标出来：它才是喂给模型的那个量，字符数只是便于看正文
+        lines.append("      规模：%d token" % parent.token_count)
         lines.append("      %s" % _LINE)
         lines.extend("      %s" % line for line in preview(parent.text))
         lines.append("")
@@ -95,6 +97,19 @@ def render_verdict(top_score: float | None, config: RetrievalConfig) -> list[str
     sufficient = top_score is not None and top_score >= config.refuse_threshold
     lines.append("  判定：%s" % ("证据够" if sufficient else "证据不够，应走拒答"))
     return lines
+
+
+def _budget_note(total_tokens: int) -> str:
+    """给一个「这些上下文占多大地方」的粗略参照。
+
+    千问系列的上下文窗口按 32k 起，这里只给个数量感——具体能装多少由
+    生成层按模型实际窗口决定。
+    """
+    if total_tokens < 8000:
+        return "不到四分之一"
+    if total_tokens < 16000:
+        return "约一半"
+    return "接近满"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -177,7 +192,10 @@ def run_one(
         print("  没有任何命中。")
         print()
     else:
+        total = sum(parent.token_count for parent in parents)
         print("召回结果（按分数从高到低）")
+        print("  合计 %d token，约占提示词预算的 %s" % (total, _budget_note(total)))
+        print()
         for line in render_parents(parents):
             print(line)
 

@@ -26,6 +26,7 @@ def make_parent(**overrides: Any) -> RetrievedParent:
         "doc_id": "doc-1",
         "score": 0.697,
         "text": "进口一站式服务适用于价值不超过 150 欧元的货物。",
+        "token_count": 1900,
         "title": "欧洲增值税常见问题",
         "source_url": "https://sellercentral.amazon.com/help/hub/reference/GDZ8RCTRUZEH4PBX",
         "country": "EU",
@@ -50,7 +51,9 @@ class TestPreview:
 
         assert len(lines) == 2
         assert lines[0].endswith("……")
-        assert "共 500 字" in lines[1]
+        # 说「字符」不说「字」：它是字符数，不是 token 数，
+        # 混用会让人拿它跟父块的 token 上限比
+        assert "共 500 字符" in lines[1]
 
     def test_empty_text_is_marked(self) -> None:
         assert preview("   ") == ["（空）"]
@@ -92,6 +95,13 @@ class TestRenderParents:
         text = "\n".join(render_parents([make_parent()]))
 
         assert "EU / faq / amazon" in text
+
+    def test_shows_the_token_count(self) -> None:
+        # token 数才是喂给模型的那个量。只给字符数会让人拿它跟
+        # 「父块 2000 token」的约束比，看起来像超标了好几倍。
+        text = "\n".join(render_parents([make_parent(token_count=1900)]))
+
+        assert "1900 token" in text
 
     def test_numbers_the_results_in_order(self) -> None:
         parents = [make_parent(score=0.9), make_parent(score=0.5)]

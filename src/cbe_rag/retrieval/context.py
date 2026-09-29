@@ -64,6 +64,7 @@ def load_parents(
             doc_id=hit.doc_id,
             score=hit.score,
             text=chunks[hit.parent_id].text,
+            token_count=chunks[hit.parent_id].token_count,
             title=documents[hit.doc_id].title,
             source_url=documents[hit.doc_id].source_url,
             country=documents[hit.doc_id].country,
