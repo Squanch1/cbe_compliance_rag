@@ -87,10 +87,14 @@ def create_app(
     """
 
     factory = state_factory or build_state
+    # 不传就用 .env 里的配置。缺了这一步会让生产路径上的 create_app()
+    # 直接崩——而测试全都注入了假 factory，这条默认路径反而没人走过。
+    effective = settings if settings is not None else Settings()
+
     # 构造时就建好状态，而不是等 lifespan：TestClient 只在 with 块里才跑
     # lifespan，状态放在那里会让没进 with 的调用一律拿到空属性。
     # 各适配器构造时不产生网络调用（见 deps.build_state），提前建没有代价。
-    app_state = factory(settings)
+    app_state = factory(effective)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

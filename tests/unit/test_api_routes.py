@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from cbe_rag.api.app import TRACE_HEADER, create_app, is_valid_trace
 from cbe_rag.api.deps import AppState
-from cbe_rag.config.settings import RetrievalConfig
+from cbe_rag.config.settings import ENV_FILE_PATH, RetrievalConfig
 from cbe_rag.retrieval.service import UncalibratedThresholdError
 from cbe_rag.storage.health import HealthResult
 from indexing_fakes import FakeEmbeddingStore
@@ -121,6 +121,19 @@ def ask(client: TestClient, **payload: Any) -> Any:
     return client.post("/api/v1/ask", json=body)
 
 
+@pytest.mark.skipif(
+    not ENV_FILE_PATH.is_file(), reason="需要 .env 才能走默认装配路径"
+)
+class TestDefaultWiring:
+    def test_create_app_without_settings(self) -> None:
+        # 生产路径：不注入任何东西，由 build_state 按 .env 造适配器。
+        # 其余测试全都注入了假 factory，这条默认路径反而没人走过——
+        # create_app() 曾经因为漏了「不传就用 Settings()」而直接崩。
+        app = create_app()
+
+        assert app.state.app_state is not None
+
+
 class TestTraceIdValidation:
     def test_accepts_a_uuid(self) -> None:
         assert is_valid_trace("3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071")
@@ -200,6 +213,20 @@ class TestAskResponseShape:
 
         assert body["refused"] is False
         assert body["degraded"] is False
+
+    def test_reports_cache_state(self) -> None:
+        # 使用者据此知道这次的结果是不是缓存的（单轮才有意义）
+        body = ask(build_client()).json()
+
+        assert body["cache_hit"] is False
+
+    def test_second_identical_question_hits_the_cache(self) -> None:
+        client = build_client()
+
+        ask(client)
+        body = ask(client).json()
+
+        assert body["cache_hit"] is True
 
     def test_citations_carry_matched_children(self) -> None:
         # 界面靠子块的偏移高亮到具体段落，只给父块级引用等于没有
