@@ -59,6 +59,10 @@ credentials.json
 data/raw/
 data/processed/
 data/index/
+
+# FAQ 译文的结构化产物，由 scripts/convert_faq_translation.py 从
+# data/faq_translated.md 生成。入库的是人手维护的那份源文件，这份是派生物。
+data/faq.json
 models/
 *.bin
 *.safetensors
