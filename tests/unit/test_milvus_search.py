@@ -185,3 +185,51 @@ class TestTopDenseScore:
         store.top_dense_score(DENSE)
 
         assert db_client.loaded
+
+
+class TestTopSparseScore:
+    """稀疏路的最高分。
+
+    它能不能当拒答判据还没定（见 docs/adr/0002-corpus-language.md），
+    但取分这件事本身要和稠密路一样可控。
+    """
+
+    def test_returns_the_highest_score(self) -> None:
+        store, _, _ = build_db_store(search_rows=(make_hit(distance=0.0786),))
+
+        assert store.top_sparse_score(SPARSE) == pytest.approx(0.0786)
+
+    def test_no_hit_returns_none(self) -> None:
+        store, _, _ = build_db_store(search_rows=())
+
+        assert store.top_sparse_score(SPARSE) is None
+
+    def test_queries_the_sparse_route_only(self) -> None:
+        # 稀疏是内积、稠密是余弦，换错了 Milvus 不报错，只是结果不对
+        store, db_client, _ = build_db_store()
+
+        store.top_sparse_score(SPARSE)
+
+        assert db_client.searched[-1]["anns_field"] == "sparse_vector"
+        assert db_client.searched[-1]["search_params"] == {"metric_type": "IP"}
+
+    def test_asks_for_a_single_hit(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.top_sparse_score(SPARSE)
+
+        assert db_client.searched[-1]["limit"] == 1
+
+    def test_passes_the_filter_through(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.top_sparse_score(SPARSE, filter_expression='country == "EU"')
+
+        assert db_client.searched[-1]["filter"] == 'country == "EU"'
+
+    def test_ensures_the_collection_is_loaded(self) -> None:
+        store, db_client, _ = build_db_store()
+
+        store.top_sparse_score(SPARSE)
+
+        assert db_client.loaded

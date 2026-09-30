@@ -45,6 +45,10 @@ class SearchOutcome:
 
     parents: list[ParentHit]
     dense_top_score: float | None
+    # 稀疏路的最高分。**目前没有消费方**，取出来是为了在评测集上比较
+    # 「用哪一路当拒答判据」（见 docs/adr/0002-corpus-language.md）。
+    # 它的量纲和稠密分不可比，阈值必须各定各的。
+    sparse_top_score: float | None
 
 
 @dataclass(frozen=True)

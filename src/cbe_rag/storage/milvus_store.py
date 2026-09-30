@@ -492,6 +492,35 @@ class MilvusStore:
             return None
         return float(results[0][0]["distance"])
 
+    def top_sparse_score(
+        self, sparse: dict[int, float], *, filter_expression: str = ""
+    ) -> float | None:
+        """取稀疏路的最高分，没有命中时返回 None。
+
+        **量纲和稠密分不可比，两者的阈值各定各的。** 同一个问题下实测
+        稠密 0.5867、稀疏 0.0786。稀疏是内积，没有上界。
+
+        **稀疏分只在查询与文档有共同词元时才大于零。** 中文问题对英文
+        文档会全线趋近零——那不是「不相关」，是这条路在该语言对上根本
+        不工作。拿它当判据前，必须先确认语料与提问是同一种语言，否则
+        「两类分得开」会是假象：一个恒为零的指标能分开任何两类。
+
+        和 top_dense_score 一样单独跑一次 limit=1 的检索：hybrid_search
+        只返回融合分，没有各路的原始分。
+        """
+        self._ensure_loaded()
+        results = self._get_db_client().search(
+            collection_name=self._config.collection,
+            data=[sparse],
+            anns_field=MILVUS_SPARSE_FIELD,
+            search_params={"metric_type": MILVUS_SPARSE_INDEX[1]},
+            limit=1,
+            filter=filter_expression,
+        )
+        if not results or not results[0]:
+            return None
+        return float(results[0][0]["distance"])
+
     def close(self) -> None:
         """释放客户端。从未连接过时调用是安全的。"""
         for client in (self._client, self._db_client):

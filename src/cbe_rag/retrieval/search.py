@@ -129,4 +129,7 @@ def search(
         dense_top_score=milvus.top_dense_score(
             dense, filter_expression=filter_expression
         ),
+        sparse_top_score=milvus.top_sparse_score(
+            sparse, filter_expression=filter_expression
+        ),
     )

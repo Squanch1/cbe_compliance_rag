@@ -234,8 +234,8 @@ class TestSearch:
 
         assert outcome.dense_top_score == pytest.approx(0.638)
 
-    def test_filter_reaches_both_routes_and_the_score_probe(self) -> None:
-        # 三处用同一个过滤条件，漏一处就会拿到不该出现的文档
+    def test_filter_reaches_both_routes_and_both_score_probes(self) -> None:
+        # 四处用同一个过滤条件，漏一处就会拿到不该出现的文档
         store, db_client, _ = build_db_store()
 
         search(
@@ -252,7 +252,28 @@ class TestSearch:
             'country == "EU"',
             'country == "EU"',
         ]
-        assert db_client.searched[-1]["filter"] == 'country == "EU"'
+        # 分数探针是两路各跑一次，两个都要带过滤
+        assert [item["anns_field"] for item in db_client.searched] == [
+            "dense_vector",
+            "sparse_vector",
+        ]
+        assert [item["filter"] for item in db_client.searched] == [
+            'country == "EU"',
+            'country == "EU"',
+        ]
+
+    def test_returns_the_sparse_top_score(self) -> None:
+        # 稀疏分取出来是为了在评测集上比较判据，目前没有消费方
+        store, _, _ = build_db_store(search_rows=(make_hit(distance=0.0786),))
+
+        outcome = search(
+            RetrievalQuery(text="q"),
+            milvus=store,
+            embedding=FakeEmbeddingStore(),
+            config=RetrievalConfig(),
+        )
+
+        assert outcome.sparse_top_score == pytest.approx(0.0786)
 
     def test_no_hits_yields_no_parents(self) -> None:
         store, _, _ = build_db_store(hybrid_rows=(), search_rows=())
@@ -266,3 +287,4 @@ class TestSearch:
 
         assert outcome.parents == []
         assert outcome.dense_top_score is None
+        assert outcome.sparse_top_score is None
