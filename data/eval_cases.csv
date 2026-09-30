@@ -1,0 +1,27 @@
+question,expected_behavior,category,expected_sources,notes
+亚马逊要求我 60 天内添加增值税登记号，我没做到会怎样,answer,factual,amazon-eu-vat-faq.html,亚马逊 FAQ 明说可能禁止在该商城销售
+我的增值税登记号还在申请中，能延长那 60 天期限吗,answer,factual,amazon-eu-vat-faq.html,确认会结清过往款项后可再获 60 天
+什么样的增值税税号才会被亚马逊认可,answer,factual,amazon-eu-vat-faq.html,注册公司名称须与卖家平台法定名称一致，且由税务机构签发
+我注册增值税号时用的公司名称和卖家平台里的不一致，该怎么办,answer,factual,amazon-eu-vat-faq.html,联系税务机构更新或重颁；也可改卖家平台名称但可能触发验证
+亚马逊增值税整合服务能帮我做什么,answer,factual,amazon-eu-vat-faq.html,帮助管理英国和欧盟的增值税登记与申报
+进口一站式服务的适用金额上限是多少,answer,factual,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf;eu-vat-ecommerce-explanatory-notes-2020.pdf,150 欧元，两版一致
+非欧盟境内的卖家可以注册 IOSS 吗,answer,factual,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,可以，须经欧盟境内设立的中介代为注册
+欧盟远程销售的地点供应阈值是多少,answer,factual,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,年营业额 1 万欧元
+电子界面在什么情况下算是参与了收款授权,answer,factual,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,依据 VAT 实施条例 Article 5b(2)(b)，直接或间接参与即算。「电子界面」用官方中文版译法
+年营业额低于 1 万欧元时要在哪个国家交增值税,answer,factual,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,地点供应仍在供应商所在成员国
+IOSS 和 OSS 有什么区别,answer,comparison,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,01-scope 3.1 的原例。每一条差异都要挂引用，且须标注「以下对比由系统基于原文汇总」
+欧盟机制和非欧盟机制分别适用于谁,answer,comparison,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,两版指南都分设这两节。除逐条挂引用外，须标注差异条目是系统归纳。术语用官方中文版译法
+欧盟跨境远程销售给消费者的免税门槛是多少,answer,factual,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,原定为 conflict 类，复核后改回：两版该句逐字相同（都在第 1.2 节，描述 2021 年那轮改革），不构成冲突。两版都是欧盟统一 1 万欧元门槛
+非欧盟企业向欧盟客户提供的电子服务属于非欧盟机制的范围吗,answer,factual,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,原定为 conflict 类，复核后改回：2020 版从未写过「仅限欧盟境内客户」，它对这一点沉默；2027 版说的是 Article 359「已修正并明确」。沉默不是冲突
+我卖 100 欧元的货到德国要交多少增值税,refuse,calculation,,01-scope 2.3 的原例。走引导式拒答：说明计算需要哪些系统不具备的输入，并引用原文说明计算方式的条款
+我一年大概要交多少税,refuse,calculation,,01-scope 2.3 的原例。同上，不是普通拒答
+德国站的增值税税率是多少,refuse,out_of_scope,语料里只有规则，没有各成员国的税率数字
+欧盟进口货物的关税起征点是多少,refuse,out_of_scope,语料讲的是增值税，不涉及关税
+亚马逊品牌备案怎么申请,refuse,out_of_scope,语料不含品牌注册相关内容
+亚马逊物流的仓储费怎么计算,refuse,out_of_scope,语料不含任何费用标准
+日本消费税的税率是多少,refuse,out_of_scope,语料只覆盖欧盟
+英国脱欧之后增值税怎么处理,refuse,out_of_scope,语料只讲欧盟规则，不含英国
+怎么在欧盟注册商标,refuse,out_of_scope,与增值税和平台规则都无关
+亚马逊账户被停用了怎么申诉,refuse,out_of_scope,语料不含账户申诉流程
+我在德国有仓库，是不是必须在德国注册增值税,answer,advice,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,原为 01-scope 3.5 的原例「我这样做合规吗」，但那题太笼统、两路都是全场最低分，而系统答「依据不足」其实是对的。改成有具体事实的结论性提问。只给原文依据，不得出现「你应该」「建议你」这类指令性表述
+我应该注册 IOSS 吗,answer,advice,eu-vat-ecommerce-explanatory-notes-rev-2027.pdf,倾向性提问。应给判定条件与出处，不得下结论，涉及业务决策时引导咨询专业顾问
