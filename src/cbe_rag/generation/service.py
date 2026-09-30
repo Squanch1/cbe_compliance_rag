@@ -13,7 +13,7 @@ from cbe_rag.config.settings import RetrievalConfig
 from cbe_rag.generation.answer import Answer, generate_answer
 from cbe_rag.generation.citations import CitationReport
 from cbe_rag.retrieval.models import RetrievalQuery, RetrievalResult
-from cbe_rag.retrieval.service import is_evidence_sufficient, retrieve
+from cbe_rag.retrieval.service import passes_prefilter, retrieve
 from cbe_rag.storage.bailian_client import BailianClient
 from cbe_rag.storage.embedding import EmbeddingStore
 from cbe_rag.storage.milvus_store import MilvusStore
@@ -65,9 +65,9 @@ def answer_question(
         query, milvus=milvus, mysql=mysql, embedding=embedding, config=config
     )
 
-    if not is_evidence_sufficient(result, config):
+    if not passes_prefilter(result, config):
         top = result.top_score
-        detail = "检索质量低于拒答阈值（最高余弦 %s，阈值 %.4f），未调用模型。" % (
+        detail = "检索分数低于粗筛线（最高余弦 %s，线 %.4f），未调用模型。" % (
             "无命中" if top is None else "%.4f" % top,
             config.refuse_threshold,
         )

@@ -15,7 +15,7 @@ from cbe_rag.retrieval.models import (
 from cbe_rag.retrieval.search import build_filter, fold_by_parent, search
 from cbe_rag.retrieval.service import (
     UncalibratedThresholdError,
-    is_evidence_sufficient,
+    passes_prefilter,
     retrieve,
 )
 
@@ -29,8 +29,8 @@ __all__ = [
     "UncalibratedThresholdError",
     "build_filter",
     "fold_by_parent",
-    "is_evidence_sufficient",
     "load_parents",
+    "passes_prefilter",
     "retrieve",
     "search",
 ]

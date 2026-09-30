@@ -14,7 +14,7 @@ from cbe_rag.config.settings import RetrievalConfig
 from cbe_rag.retrieval.models import RetrievalQuery, RetrievalResult
 from cbe_rag.retrieval.service import (
     UncalibratedThresholdError,
-    is_evidence_sufficient,
+    passes_prefilter,
     retrieve,
 )
 from indexing_fakes import FakeEmbeddingStore
@@ -124,26 +124,26 @@ class TestIsEvidenceSufficient:
         # 未经校准的结果流到生成层，得到的是「看着有出处、其实没检索到
         # 相关内容」的答案，比直接拒答危险得多
         with pytest.raises(UncalibratedThresholdError, match="尚未标定"):
-            is_evidence_sufficient(make_result(), make_config(refuse_threshold=None))
+            passes_prefilter(make_result(), make_config(refuse_threshold=None))
 
     def test_score_above_threshold(self) -> None:
-        assert is_evidence_sufficient(
+        assert passes_prefilter(
             make_result(top_score=0.6), make_config(refuse_threshold=0.45)
         )
 
     def test_score_below_threshold(self) -> None:
-        assert not is_evidence_sufficient(
+        assert not passes_prefilter(
             make_result(top_score=0.3), make_config(refuse_threshold=0.45)
         )
 
     def test_score_exactly_at_threshold(self) -> None:
         # 边界取「够」，与「不低于阈值」的表述一致
-        assert is_evidence_sufficient(
+        assert passes_prefilter(
             make_result(top_score=0.45), make_config(refuse_threshold=0.45)
         )
 
     def test_no_hits_is_never_sufficient(self) -> None:
         # 一条都没检索到，阈值再低也不该放行
-        assert not is_evidence_sufficient(
+        assert not passes_prefilter(
             make_result(top_score=None), make_config(refuse_threshold=0.0)
         )

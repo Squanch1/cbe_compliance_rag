@@ -79,7 +79,7 @@ def render_verdict(top_score: float | None, config: RetrievalConfig) -> list[str
     """渲染质量判据与拒答判定。
 
     阈值未标定时**不猜**，直接把「判不了」说出来——这正是
-    is_evidence_sufficient 会抛错的理由。
+    passes_prefilter 会抛错的理由。
     """
     if top_score is None:
         lines = ["质量判据（稠密路最高余弦）：没有任何命中"]
